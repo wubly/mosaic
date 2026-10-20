@@ -1,0 +1,48 @@
+{
+  "name": "mosaic",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Mosaic — a SoundCloud music player",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"next dev -p 3917\" \"wait-on http://localhost:3917 && cross-env MOSAIC_DEV=1 electron .\"",
+    "build": "next build",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "app.mosaic.player",
+    "productName": "Mosaic",
+    "directories": {
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "out/**",
+      "build/icon.*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    }
+  },
+  "dependencies": {
+    "@material/material-color-utilities": "^0.3.0",
+    "@xhayper/discord-rpc": "^1.5.1",
+    "framer-motion": "^14.4.0",
+    "hls.js": "^1.7.3",
+    "music-metadata": "^12.2.3",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-icons": "^5.7.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "electron": "^44.9.2",
+    "electron-builder": "^26.15.3",
+    "wait-on": "^9.5.1"
+  }
+}
