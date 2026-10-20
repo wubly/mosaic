@@ -30,3 +30,7 @@ npm run dev
 
 - soundcloud access is unofficial and can break. personal use only.
 - not affiliated with soundcloud, spotify, discord or lrclib.
+
+## more notes
+- dont bug report, jsut make pr :3
+- works on windows 10, havent tested on other 
