@@ -1,12 +1,12 @@
 'use client';
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useData } from '@/components/data/DataProvider';
 import { useToast } from '@/components/ui/Toast';
 import { rampVolume, cancelFade } from '@/components/player/audio/fade';
-import { fadeOutGhost } from '@/components/player/audio/crossfade';
 import useAudioGraph from '@/components/player/audio/useAudioGraph';
 import useSleepTimer from '@/components/player/audio/useSleepTimer';
 import { resolveSource, attachStream, detachStream } from '@/components/player/audio/stream';
+import { filterAlong } from '@/components/player/queue/relevance';
 import useQueueState from '@/components/player/queue/useQueueState';
 import useQueueOps from '@/components/player/queue/useQueueOps';
 import usePresenceSync from '@/components/player/system/usePresenceSync';
@@ -15,25 +15,37 @@ import useListeningStats from '@/components/player/system/useListeningStats';
 import useSessionPersistence from '@/components/player/system/useSessionPersistence';
 
 const PlayerCtx = createContext(null);
-const TimeCtx = createContext({ current: 0, duration: 0 });
+const TimeCtx = createContext({ current: 0, duration: 0, offset: 0, tail: 0 });
 
 export const usePlayer = () => useContext(PlayerCtx);
 export const useTime = () => useContext(TimeCtx);
 
+const LEAD = 1;
 const NEXT_REPEAT = { off: 'all', all: 'one', one: 'off' };
 
 export default function PlayerProvider({ children }) {
   const { settings, setSetting } = useData();
   const toast = useToast();
 
-  const audioRef = useRef(null);
-  const hlsRef = useRef(null);
+  const deckA = useRef(null);
+  const deckB = useRef(null);
+  const activeDeck = useRef(0);
+  const hlsRefs = useRef([{ current: null }, { current: null }]).current;
+  const audioRef = useMemo(() => ({
+    get current() { return [deckA.current, deckB.current][activeDeck.current]; },
+    get all() { return [deckA.current, deckB.current]; },
+  }), []);
+  const hlsRef = useMemo(() => ({
+    get current() { return hlsRefs[activeDeck.current].current; },
+    set current(value) { hlsRefs[activeDeck.current].current = value; },
+  }), [hlsRefs]);
   const loadSeq = useRef(0);
   const loadedRef = useRef(false);
   const resumeAt = useRef(0);
   const fetchingMore = useRef(false);
   const crossfading = useRef(0);
   const crossfadeFor = useRef(null);
+  const endSkipped = useRef(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -45,6 +57,9 @@ export default function PlayerProvider({ children }) {
   const [time, setTime] = useState({ current: 0, duration: 0 });
 
   const graph = useAudioGraph(audioRef, settings, track);
+  const silenceRef = useRef(null);
+  const speedRef = useRef(settings.speed);
+  speedRef.current = settings.speed;
   const { sleep, sleepLeft, setSleep, takeEndOfTrack } = useSleepTimer(audioRef, toast);
 
   const load = useCallback(async (target, { seekTo = 0, autoplay = true, fadeIn = 0 } = {}) => {
@@ -60,12 +75,15 @@ export default function PlayerProvider({ children }) {
     cancelFade(audio);
     audio.volume = settingsRef.current.volume;
     detachStream(hlsRef);
+    silenceRef.current = null;
+    endSkipped.current = null;
 
     const onReady = () => {
-      if (seekTo) audio.currentTime = seekTo;
+      const skipTo = settingsRef.current.skipSilence ? silenceRef.current?.start : 0;
+      if (seekTo || skipTo) audio.currentTime = seekTo || skipTo;
       if (autoplay && fadeIn) {
         audio.volume = 0;
-        audio.play().then(() => rampVolume(audio, 0, settingsRef.current.volume, fadeIn * 1000)).catch(() => {});
+        audio.play().then(() => rampVolume(audio, 0, settingsRef.current.volume, fadeIn * 1000, undefined, 'in')).catch(() => {});
       } else if (autoplay) audio.play().catch(() => {});
       else setLoading(false);
     };
@@ -76,8 +94,9 @@ export default function PlayerProvider({ children }) {
     };
 
     try {
-      const { url, type } = await resolveSource(target);
+      const { url, type, silence } = await resolveSource(target);
       if (token !== loadSeq.current) return;
+      silenceRef.current = silence || null;
       attachStream({ audio, hlsRef, url, type, onReady, onFatal: () => fail('Playback failed') });
     } catch (e) {
       fail(e.message || 'Could not play this track');
@@ -94,6 +113,7 @@ export default function PlayerProvider({ children }) {
   const play = useCallback((target, list) => {
     const seen = new Set();
     const unique = list ? list.filter((t) => !seen.has(t.id) && seen.add(t.id)) : [target];
+    if (!unique.some((t) => t.id === target.id)) unique.unshift(target);
     setQueue({ list: unique, index: Math.max(0, unique.findIndex((t) => t.id === target.id)) });
     load(target);
   }, [setQueue, load]);
@@ -115,7 +135,7 @@ export default function PlayerProvider({ children }) {
     fetchingMore.current = true;
     try {
       const last = queueState.list[queueState.index];
-      const similar = (await window.mosaic.related(last.id)).filter((t) => !queueState.list.some((x) => x.id === t.id));
+      const similar = filterAlong(await window.mosaic.related(last.id, 40), last).filter((t) => !queueState.list.some((x) => x.id === t.id));
       if (!similar.length) return;
       const list = [...queueState.list, ...similar];
       setQueue({ list, index: queueState.list.length });
@@ -205,9 +225,21 @@ export default function PlayerProvider({ children }) {
 
   const onTimeUpdate = (e) => {
     const audio = e.currentTarget;
-    setTime({ current: audio.currentTime, duration: audio.duration || track?.duration / 1000 || 0 });
+    const duration = audio.duration || track?.duration / 1000 || 0;
+    const trim = settingsRef.current.skipSilence ? silenceRef.current : null;
+    setTime({ current: audio.currentTime, duration, offset: trim?.start || 0, tail: trim?.end ? Math.max(0, duration - trim.end) : 0 });
     savePosition(audio.currentTime);
     maybeCrossfade(audio);
+    maybeSkipTail(audio);
+  };
+
+  const maybeSkipTail = (audio) => {
+    const end = silenceRef.current?.end;
+    if (!end || !settingsRef.current.skipSilence || audio.paused || audio.currentTime < end) return;
+    const key = track.id + loadSeq.current;
+    if (endSkipped.current === key) return;
+    endSkipped.current = key;
+    step(1, true);
   };
 
   const maybeCrossfade = (audio) => {
@@ -215,16 +247,32 @@ export default function PlayerProvider({ children }) {
     const length = audio.duration;
     if (!seconds || !track || audio.paused || !length || !Number.isFinite(length)) return;
     const left = length - audio.currentTime;
-    if (left > seconds || left < 0.4 || length < seconds * 2) return;
+    if (left > seconds + LEAD || left < 0.4 || length < seconds * 2) return;
     if (crossfadeFor.current === track.id + loadSeq.current) return;
     const state = queueRef.current;
     const prefs = settingsRef.current;
     if (prefs.repeat === 'one' || sleep.mode === 'eot') return;
     if (nextIndex(state, 1, prefs) === null) return;
     crossfadeFor.current = track.id + loadSeq.current;
-    crossfading.current = Math.max(1, left - 0.2);
-    fadeOutGhost({ track, at: audio.currentTime, volume: audio.volume, speed: prefs.speed, seconds: left });
+    crossfading.current = seconds;
+    handOver(Math.max(0.5, left - 0.1));
     step(1, true);
+  };
+
+  const handOver = (ms) => {
+    const outgoing = audioRef.current;
+    const outgoingHls = hlsRefs[activeDeck.current];
+    activeDeck.current ^= 1;
+    const incoming = audioRef.current;
+    incoming.defaultPlaybackRate = settingsRef.current.speed;
+    incoming.playbackRate = settingsRef.current.speed;
+
+    rampVolume(outgoing, outgoing.volume, 0, ms * 1000, () => {
+      outgoing.pause();
+      detachStream(outgoingHls);
+      outgoing.removeAttribute('src');
+      outgoing.load();
+    }, 'out');
   };
 
   const onError = () => {
@@ -232,6 +280,8 @@ export default function PlayerProvider({ children }) {
     setError('Playback failed');
     setLoading(false);
   };
+
+  const mine = (i, fn) => (e) => { if (activeDeck.current === i) fn(e); };
 
   const value = {
     track, queue, playing, loading, error,
@@ -245,18 +295,21 @@ export default function PlayerProvider({ children }) {
   return (
     <PlayerCtx.Provider value={value}>
       <TimeCtx.Provider value={time}>
-        <audio
-          ref={audioRef}
-          crossOrigin="anonymous"
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onPlaying={() => setLoading(false)}
-          onWaiting={() => setLoading(true)}
-          onTimeUpdate={onTimeUpdate}
-          onSeeked={noteSeek}
-          onEnded={() => step(1, true)}
-          onError={onError}
-        />
+        {[deckA, deckB].map((ref, i) => (
+          <audio
+            key={i}
+            ref={ref}
+            crossOrigin="anonymous"
+            onPlay={mine(i, () => setPlaying(true))}
+            onPause={mine(i, () => setPlaying(false))}
+            onPlaying={mine(i, () => setLoading(false))}
+            onWaiting={mine(i, () => setLoading(true))}
+            onTimeUpdate={mine(i, onTimeUpdate)}
+            onSeeked={mine(i, noteSeek)}
+            onEnded={mine(i, () => step(1, true))}
+            onError={mine(i, onError)}
+          />
+        ))}
         {children}
       </TimeCtx.Provider>
     </PlayerCtx.Provider>

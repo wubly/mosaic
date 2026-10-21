@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+if (process.platform === 'darwin') {
+  window.addEventListener('DOMContentLoaded', () => { document.documentElement.dataset.platform = 'mac'; });
+}
+
 contextBridge.exposeInMainWorld('mosaic', {
+  platform: process.platform,
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (cfg) => ipcRenderer.invoke('config:save', cfg),
   resetConfig: () => ipcRenderer.invoke('config:reset'),
@@ -10,7 +15,7 @@ contextBridge.exposeInMainWorld('mosaic', {
 
   search: (q) => ipcRenderer.invoke('sc:search', q),
   charts: (genre) => ipcRenderer.invoke('sc:charts', genre),
-  related: (id) => ipcRenderer.invoke('sc:related', id),
+  related: (id, limit) => ipcRenderer.invoke('sc:related', id, limit),
   getStream: (id) => ipcRenderer.invoke('sc:stream', id),
   getLyrics: (track) => ipcRenderer.invoke('lyrics:get', track),
   lyricCandidates: (args) => ipcRenderer.invoke('lyrics:candidates', args),
@@ -28,6 +33,8 @@ contextBridge.exposeInMainWorld('mosaic', {
   },
   getPerf: () => ipcRenderer.invoke('perf:get'),
   setLowMemory: (on) => ipcRenderer.invoke('perf:set', on),
+  getGenius: () => ipcRenderer.invoke('genius:get'),
+  setGenius: (on) => ipcRenderer.invoke('genius:set', on),
   getCloseToTray: () => ipcRenderer.invoke('tray:get'),
   setCloseToTray: (on) => ipcRenderer.invoke('tray:set', on),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),

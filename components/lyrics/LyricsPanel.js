@@ -23,18 +23,22 @@ export default function LyricsPanel({ large = false, bare = false }) {
     boxRef.current?.scrollTo({ top: 0 });
   };
 
-  useEffect(() => {
-    if (!track) return;
-    let live = true;
-    setPicker(false);
+  const fetchLyrics = (live = () => true) => {
     setLyrics(null);
     activeRef.current = -1;
     setActive(-1);
     window.mosaic
       .getLyrics({ id: track.id, title: track.title, artist: track.artist, duration: track.duration, lrcPath: track.lrcPath })
-      .then((l) => live && setLyrics(l))
-      .catch(() => live && setLyrics({ synced: [], plain: '', meta: { kind: 'none' } }));
-    return () => { live = false; };
+      .then((l) => live() && setLyrics(l))
+      .catch(() => live() && setLyrics({ synced: [], plain: '', meta: { kind: 'none' } }));
+  };
+
+  useEffect(() => {
+    if (!track) return;
+    let alive = true;
+    setPicker(false);
+    fetchLyrics(() => alive);
+    return () => { alive = false; };
   }, [track?.id]);
 
   const synced = lyrics?.synced ?? [];
@@ -99,6 +103,7 @@ export default function LyricsPanel({ large = false, bare = false }) {
   }
 
   const kind = lyrics === null ? null : lyrics.meta?.kind || (synced.length ? 'synced' : lyrics.plain ? 'plain' : 'none');
+  const empty = lyrics !== null && synced.length === 0 && !lyrics.plain;
   const sourcePill = bare ? null : (
     <button className={`lyr-source ${kind || 'loading'}`} onClick={() => setPicker(true)} title="Choose another version of the lyrics">
       <MdSubtitles size={16} />
@@ -108,7 +113,7 @@ export default function LyricsPanel({ large = false, bare = false }) {
   );
 
   return (
-    <div className={`lyr-wrap ${large ? 'large' : ''} ${bare ? 'bare' : ''}`}>
+    <div className={`lyr-wrap ${large ? 'large' : ''} ${bare ? 'bare' : ''} ${empty ? 'empty' : ''}`}>
       {!large && !bare && (
         <header className="lyr-head">
           <motion.div key={track.id} className="lyr-art" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} style={{ backgroundImage: (track.thumb || track.artwork) ? `url(${track.thumb || track.artwork})` : undefined }} />
@@ -117,7 +122,7 @@ export default function LyricsPanel({ large = false, bare = false }) {
           {sourcePill}
         </header>
       )}
-      {large && <div className="lyr-pill-float">{sourcePill}</div>}
+      {large && !empty && <div className="lyr-pill-float">{sourcePill}</div>}
 
       <div className="lyrics" ref={boxRef}>
         {lyrics === null && <p className="lyr-empty">Finding lyrics…</p>}
@@ -143,7 +148,7 @@ export default function LyricsPanel({ large = false, bare = false }) {
         })}
 
         {lyrics && synced.length === 0 && lyrics.plain && <p className="plain">{lyrics.plain}</p>}
-        {lyrics && synced.length === 0 && !lyrics.plain && <p className="lyr-empty">No lyrics found for this track.</p>}
+        {empty && large && <div className="lyr-empty-center">{sourcePill}</div>}
       </div>
 
       <AnimatePresence>

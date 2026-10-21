@@ -31,7 +31,7 @@ export default function Page() {
   if (!state.onboarded) {
     return (
       <>
-        <div className="titlebar" />
+        <div className="titlebar" style={window.mosaic?.platform === 'darwin' ? { paddingLeft: 92 } : undefined} />
         <Onboarding onDone={(name) => setState({ ready: true, onboarded: true, name })} />
       </>
     );

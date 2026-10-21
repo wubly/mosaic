@@ -21,7 +21,8 @@ function parseTitle(title, uploader) {
     tracks.push(clean(split.slice(1).join(' - ')), clean(split[1]));
   }
   tracks.push(clean(title));
-  artists.push(clean(uploader || ''));
+  const owner = clean(uploader || '');
+  artists.push(owner, ...owner.split(/\s*[;/,&]\s*/));
 
   return { tracks: uniq(tracks).slice(0, 3), artists: uniq(artists).slice(0, 3) };
 }

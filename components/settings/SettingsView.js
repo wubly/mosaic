@@ -6,7 +6,6 @@ import { useToast } from '@/components/ui/Toast';
 import PageHeader from '@/components/ui/PageHeader';
 import Switch from '@/components/ui/Switch';
 import WavySlider from '@/components/player/WavySlider';
-
 export const SHORTCUTS = [
   ['Space', 'Play / pause'],
   ['← →', 'Seek 5 seconds'],
@@ -22,7 +21,6 @@ export const SHORTCUTS = [
   ['Ctrl + K', 'Command palette'],
   ['Media keys', 'Work system-wide, even when minimised'],
 ];
-
 export default function SettingsView({ onReset }) {
   const lib = useData();
   const toast = useToast();
@@ -30,19 +28,21 @@ export default function SettingsView({ onReset }) {
   const [rpc, setRpc] = useState({ enabled: false, connected: false, user: null });
   const [perf, setPerf] = useState({ lowMemory: true, startedWith: true });
   const [tray, setTray] = useState(true);
+  const [genius, setGenius] = useState(false);
+  useEffect(() => { window.mosaic.getGenius().then(setGenius); }, []);
   useEffect(() => { window.mosaic.getCloseToTray().then(setTray); }, []);
   useEffect(() => { window.mosaic.getPerf().then((p) => setPerf({ lowMemory: p.lowMemory, startedWith: p.lowMemory })); }, []);
   useEffect(() => {
     window.mosaic.presenceStatus().then(setRpc);
     return window.mosaic.onPresenceStatus(setRpc);
   }, []);
-
   return (
     <div className="library">
       <PageHeader title="Settings" />
-
       <section className="settings">
-        <h3>Playback</h3>
+        <div className="set-group">
+          <h3>Playback</h3>
+          <div className="set-card">
         <label className="switch-row">
           <span><b>Autoplay similar tracks</b><em>When your queue ends, keep going with tracks SoundCloud thinks you’ll like.</em></span>
           <Switch on={s.autoplay} onChange={(v) => lib.setSetting('autoplay', v)} />
@@ -61,6 +61,10 @@ export default function SettingsView({ onReset }) {
           <Switch on={s.fadePause} onChange={(v) => lib.setSetting('fadePause', v)} />
         </label>
         <label className="switch-row">
+          <span><b>Skip silence at start and end</b><em>Jump past long silent intros and outros, like the blank first minute some SoundCloud uploads use to dodge copyright. Never touches the middle of a song.</em></span>
+          <Switch on={s.skipSilence} onChange={(v) => lib.setSetting('skipSilence', v)} />
+        </label>
+        <label className="switch-row">
           <span><b>Level loudness</b><em>Gently compress loud peaks so quiet and loud tracks sit closer together.</em></span>
           <Switch on={s.leveling} onChange={(v) => lib.setSetting('leveling', v)} />
         </label>
@@ -68,13 +72,15 @@ export default function SettingsView({ onReset }) {
           <span><b>Show lyrics panel</b><em>Synced, word-by-word lyrics from LRCLIB beside your music.</em></span>
           <Switch on={s.lyricsOpen} onChange={(v) => lib.setSetting('lyricsOpen', v)} />
         </label>
-
         <label className="switch-row">
           <span><b>Keep playing in the tray</b><em>Closing the window hides Mosaic in the system tray so your music keeps going. Quit from the tray icon.</em></span>
           <Switch on={tray} onChange={(v) => { setTray(v); window.mosaic.setCloseToTray(v); }} />
         </label>
-
-        <h3>Discord</h3>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>Discord</h3>
+          <div className="set-card">
         <label className="switch-row">
           <span>
             <b>Rich Presence</b>
@@ -89,8 +95,23 @@ export default function SettingsView({ onReset }) {
           </span>
           <Switch on={s.presence} onChange={(v) => lib.setSetting('presence', v)} />
         </label>
-
-        <h3>Performance</h3>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>Lyrics</h3>
+          <div className="set-card">
+        <label className="switch-row">
+          <span>
+            <b>Genius lyrics <span className="warn">(beta)</span></b>
+            <em>When LRCLIB has nothing, scrape plain lyrics from genius.com. No timing, and it can break whenever Genius changes its pages.</em>
+          </span>
+          <Switch on={genius} onChange={(v) => { setGenius(v); window.mosaic.setGenius(v); }} />
+        </label>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>Performance</h3>
+          <div className="set-card">
         <label className="switch-row">
           <span>
             <b>Low memory mode</b>
@@ -103,23 +124,34 @@ export default function SettingsView({ onReset }) {
             <button className="primary" onClick={() => window.mosaic.relaunch()}>Restart to apply</button>
           </div>
         )}
-
-        <h3>Library</h3>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>Library</h3>
+          <div className="set-card">
         <div className="btn-row">
           <button className="tonal" onClick={() => { lib.rescan(); toast('Rescanning your music…'); }}><MdRefresh size={20} /> Rescan local music</button>
           <button className="tonal" onClick={() => { lib.clearHistory(); toast('History and stats cleared'); }}><MdDelete size={20} /> Clear history & stats</button>
           <button className="tonal" onClick={onReset}><MdRestartAlt size={20} /> Restart onboarding</button>
         </div>
-
-        <h3>Keyboard shortcuts</h3>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>Keyboard shortcuts</h3>
+          <div className="set-card">
         <dl className="keys">
           {SHORTCUTS.map(([k, d]) => (
             <div key={k}><dt>{k.split(' + ').map((x, i) => <span key={i}><kbd>{x}</kbd>{i < k.split(' + ').length - 1 ? ' + ' : ''}</span>)}</dt><dd>{d}</dd></div>
           ))}
         </dl>
-
-        <h3>About</h3>
+          </div>
+        </div>
+        <div className="set-group">
+          <h3>About</h3>
+          <div className="set-card">
         <p className="muted">Mosaic 0.2 · lyrics by <a href="https://lrclib.net" onClick={(e) => { e.preventDefault(); window.mosaic.openExternal('https://lrclib.net'); }}>LRCLIB</a> · colour from your artwork via Material You.</p>
+          </div>
+        </div>
       </section>
     </div>
   );

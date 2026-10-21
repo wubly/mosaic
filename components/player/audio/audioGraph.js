@@ -1,10 +1,10 @@
 const EQ_BANDS = [60, 230, 910, 3600, 14000];
 const EQ_TYPES = ['lowshelf', 'peaking', 'peaking', 'peaking', 'highshelf'];
 
-export function createAudioGraph(audio) {
+export function createAudioGraph(audios) {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   const ctx = new AudioContextClass();
-  const source = ctx.createMediaElementSource(audio);
+  const sources = audios.map((audio) => ctx.createMediaElementSource(audio));
 
   const filters = EQ_BANDS.map((frequency, i) => {
     const filter = ctx.createBiquadFilter();
@@ -26,8 +26,9 @@ export function createAudioGraph(audio) {
   leveler.attack.value = 0.01;
   leveler.release.value = 0.25;
 
-  let node = source;
-  for (const filter of filters) {
+  sources.forEach((source) => source.connect(filters[0]));
+  let node = filters[0];
+  for (const filter of filters.slice(1)) {
     node.connect(filter);
     node = filter;
   }

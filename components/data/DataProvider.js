@@ -15,6 +15,7 @@ const DEFAULTS = {
     autoplay: true,
     crossfade: 0,
     fadePause: true,
+    skipSilence: true,
     leveling: false,
     eqOn: false,
     eqGains: [0, 0, 0, 0, 0],

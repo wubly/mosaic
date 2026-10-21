@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app } = require('electron');
 const { applyFlags } = require('./core/flags');
 
 applyFlags();
@@ -12,6 +12,7 @@ const { registerLyricsIpc } = require('./lyrics/ipc');
 const { registerLibraryIpc } = require('./library/ipc');
 const { registerSpotifyIpc } = require('./spotify/ipc');
 const { createTray } = require('./tray');
+const { setupMac } = require('./mac');
 const { registerDiscordIpc } = require('./discord/presence');
 
 registerSchemes();
@@ -34,10 +35,8 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
     registerMediaKeys();
     createTray();
+    setupMac();
 
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
   });
 
   app.on('will-quit', unregisterMediaKeys);

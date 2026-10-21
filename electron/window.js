@@ -1,6 +1,8 @@
 const { BrowserWindow, ipcMain, shell } = require('electron');
 const { APP_ICON, PRELOAD, DEV, DEV_URL, APP_URL } = require('./core/constants');
 
+const IS_MAC = process.platform === 'darwin';
+
 let mainWindow = null;
 let normalBounds = null;
 
@@ -21,12 +23,14 @@ function createWindow() {
     icon: APP_ICON,
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#00000000', symbolColor: '#cac4d0', height: 40 },
+    ...(IS_MAC
+      ? { trafficLightPosition: { x: 18, y: 12 } }
+      : { titleBarOverlay: { color: '#00000000', symbolColor: '#cac4d0', height: 40 } }),
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false,
+      backgroundThrottling: true,
     },
   });
 

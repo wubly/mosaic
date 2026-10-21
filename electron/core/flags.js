@@ -6,8 +6,8 @@ const { APP_ID } = require('./constants');
 let lowMemory = true;
 
 function applyFlags() {
-  app.setAppUserModelId(APP_ID);
-  app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling,MediaSessionService,CalculateNativeWinOcclusion');
+  if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+  if (process.platform !== 'darwin') app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling,MediaSessionService,CalculateNativeWinOcclusion');
 
   try {
     const early = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'mosaic-config.json'), 'utf8'));
@@ -16,7 +16,7 @@ function applyFlags() {
 
   if (lowMemory) {
     app.commandLine.appendSwitch('enable-low-end-device-mode');
-    app.disableHardwareAcceleration();
+    if (process.platform !== 'darwin') app.disableHardwareAcceleration();
   }
 }
 

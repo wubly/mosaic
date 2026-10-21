@@ -9,6 +9,7 @@ const KEYS = [
 ];
 
 function registerMediaKeys() {
+  if (process.platform === 'darwin') return;
   const send = (command) => getMainWindow()?.webContents.send('media-key', command);
   for (const [key, command] of KEYS) {
     try { globalShortcut.register(key, () => send(command)); } catch {}

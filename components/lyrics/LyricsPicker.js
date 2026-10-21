@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { MdClose, MdCheck, MdSearch, MdAutoAwesome } from 'react-icons/md';
 import { useToast } from '@/components/ui/Toast';
+import Switch from '@/components/ui/Switch';
 
 export const KIND_LABEL = {
   word: 'Word synced',
@@ -23,6 +24,8 @@ export default function LyricsPicker({ track, current, onClose, onPicked }) {
   const [data, setData] = useState({ list: null, query: '' });
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(true);
+  const [genius, setGenius] = useState(false);
+  useEffect(() => { window.mosaic.getGenius().then(setGenius); }, []);
 
   const args = { id: track.id, title: track.title, artist: track.artist, duration: track.duration, lrcPath: track.lrcPath };
 
@@ -50,6 +53,12 @@ export default function LyricsPicker({ track, current, onClose, onPicked }) {
     onClose();
   };
 
+  const toggleGenius = async (on) => {
+    setGenius(on);
+    await window.mosaic.setGenius(on);
+    if (on && !current?.id) onPicked(await window.mosaic.selectLyrics({ ...args, candId: null }));
+  };
+
   const isCurrent = (c) => (c.id === 'file' ? current?.origin === 'file' : current?.id === c.id);
   const list = data.list ?? [];
 
@@ -70,6 +79,14 @@ export default function LyricsPicker({ track, current, onClose, onPicked }) {
         <div><KindBadge kind="synced" /><span>Timed line by line</span></div>
         <div><KindBadge kind="plain" /><span>Plain text, no timing</span></div>
       </dl>
+
+      <label className="lyr-genius">
+        <span>
+          <b>Genius <span className="beta">beta</span></b>
+          <em>{genius ? 'On. Used when LRCLIB has nothing; plain lyrics only.' : 'Scrape plain, unsynced lyrics from genius.com when LRCLIB has nothing. Can break if Genius changes its pages.'}</em>
+        </span>
+        <Switch on={genius} onChange={toggleGenius} />
+      </label>
 
       <ul>
         {current?.origin === 'custom' && (

@@ -24,7 +24,7 @@ npm install
 npm run dev
 ```
 
-`npm run dist` builds a windows installer. press ctrl+k in the app for everything else.
+`npm run dist` builds a windows installer, `npm run dist:mac` a dmg. press ctrl+k in the app for everything else.
 
 ## notes
 
@@ -33,4 +33,4 @@ npm run dev
 
 ## more notes
 - dont bug report, jsut make pr :3
-- works on windows 10, havent tested on other 
+- works on windows 10 and macOS (media keys need accessibility permission on mac) 

@@ -7,7 +7,7 @@ export default function useAudioGraph(audioRef, settings, track) {
   const analyserWanted = useRef(false);
 
   const ensureGraph = useCallback(() => {
-    if (!graph.current) graph.current = createAudioGraph(audioRef.current);
+    if (!graph.current) graph.current = createAudioGraph(audioRef.all);
     return graph.current;
   }, [audioRef]);
 

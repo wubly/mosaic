@@ -26,7 +26,9 @@ import useShortcuts from '@/components/app/useShortcuts';
 import useFileDrop from '@/components/app/useFileDrop';
 import buildPaletteActions from '@/components/app/paletteActions';
 
-const Titlebar = () => <div className="titlebar"><Logo size={16} className="tb" /></div>;
+export const macInset = typeof window !== 'undefined' && window.mosaic?.platform === 'darwin' ? { paddingLeft: 92 } : undefined;
+
+const Titlebar = () => <div className="titlebar" style={macInset}><Logo size={16} className="tb" /></div>;
 
 export default function Shell({ name, onReset }) {
   const player = usePlayer();

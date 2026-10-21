@@ -11,5 +11,5 @@ module.exports = {
   DEV_URL: 'http://localhost:3917',
   APP_URL: 'app://mosaic/index.html',
   APP_ID: 'app.mosaic.player',
-  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36',
+  USER_AGENT: `Mozilla/5.0 (${process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Windows NT 10.0; Win64; x64'}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36`,
 };

@@ -8,7 +8,8 @@
     "dev": "concurrently -k \"next dev -p 3917\" \"wait-on http://localhost:3917 && cross-env MOSAIC_DEV=1 electron .\"",
     "build": "next build",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac"
   },
   "build": {
     "appId": "app.mosaic.player",
@@ -22,6 +23,11 @@
       "build/icon.*",
       "package.json"
     ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.music",
+      "icon": "build/icon.png"
+    },
     "win": {
       "target": "nsis",
       "icon": "build/icon.ico"

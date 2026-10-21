@@ -15,10 +15,12 @@ export default function Visualizer({ height = 72 }) {
     let raf;
     let color = '#d0bcff';
     let lastColorRead = 0;
+    let lastFrame = 0;
     const data = new Uint8Array(256);
 
     const draw = (now) => {
-      if (document.hidden) { raf = requestAnimationFrame(draw); return; }
+      if (document.hidden || now - lastFrame < 32) { raf = requestAnimationFrame(draw); return; }
+      lastFrame = now;
       const dpr = window.devicePixelRatio || 1;
       const w = el.clientWidth;
       const h = el.clientHeight;

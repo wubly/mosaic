@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { userFile, readJson, writeJson } = require('../core/storage');
 const { sleep } = require('../core/util');
+const { readConfig } = require('../core/storage');
+const { geniusLyrics } = require('./genius');
 const { lrclib, failureCount } = require('./lrclib');
+const { localPaths } = require('../library/scanner');
 const { norm, parseTitle, parseLrc, hasWordStamps, kindOf, shapeLyrics, emptyLyrics } = require('./parse');
 
 const autoCache = new Map();
@@ -19,6 +22,32 @@ function sidecar(lrcPath) {
   try {
     const lines = parseLrc(fs.readFileSync(lrcPath, 'utf8'));
     return lines.length ? lines : null;
+  } catch {
+    return null;
+  }
+}
+
+async function embedded(id) {
+  const file = typeof id === 'string' && id.startsWith('local:') && localPaths.get(id);
+  if (!file) return null;
+
+  try {
+    const mm = await import('music-metadata');
+    const meta = await mm.parseFile(file, { skipPostHeaders: true });
+    const tags = meta.common.lyrics || [];
+
+    const timed = tags.find((t) => t.syncText?.length && t.timeStampFormat === 2);
+    if (timed) {
+      const synced = timed.syncText.filter((l) => l.text?.trim()).map((l) => ({ t: (l.timestamp ?? 0) / 1000, text: l.text.trim() }));
+      if (synced.length) return { synced, plain: '', kind: 'synced' };
+    }
+
+    const text = tags.map((t) => t.text).find((t) => t?.trim());
+    if (!text) return null;
+
+    const lines = parseLrc(text);
+    if (lines.length) return { synced: lines, plain: '', kind: lines.some((l) => l.words) ? 'word' : 'synced' };
+    return { synced: [], plain: text.trim(), kind: 'plain' };
   } catch {
     return null;
   }
@@ -84,11 +113,27 @@ async function getLyrics(args) {
 
   if (autoCache.has(id)) return autoCache.get(id);
 
+  const tagged = await embedded(id);
+  if (tagged) {
+    const result = { synced: tagged.synced, plain: tagged.plain, meta: { origin: 'file', id: 'embedded', title: 'Embedded in file', artist: '', album: '', kind: tagged.kind } };
+    autoCache.set(id, result);
+    return result;
+  }
+
   const failuresBefore = failureCount();
   let found = await autoLyrics(args);
   if (!found && failureCount() > failuresBefore) {
     await sleep(1500);
     found = await autoLyrics(args);
+  }
+
+  if (!found && readConfig().genius) {
+    const plain = await geniusLyrics(args.title, args.artist);
+    if (plain) {
+      const result = { synced: [], plain, meta: { origin: 'genius', id: 'genius', title: args.title, artist: args.artist, album: '', kind: 'plain' } };
+      autoCache.set(id, result);
+      return result;
+    }
   }
 
   if (!found) return emptyLyrics();

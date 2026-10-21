@@ -20,6 +20,9 @@ function Spinner() {
 export default function Controls() {
   const { playing, loading, shuffle, repeat, toggle, next, prev, seek, toggleShuffle, cycleRepeat } = usePlayer();
   const time = useTime();
+  const offset = time.offset || 0;
+  const shownDuration = Math.max(0, time.duration - offset - (time.tail || 0));
+  const shownCurrent = Math.min(Math.max(0, time.current - offset), shownDuration || Infinity);
   const RepeatIcon = repeat === 'one' ? MdRepeatOne : MdRepeat;
 
   return (
@@ -46,9 +49,9 @@ export default function Controls() {
       </div>
 
       <div className="seek">
-        <span>{fmt(time.current)}</span>
-        <WavySlider label="Seek" value={time.current} max={time.duration || 1} playing={playing && !loading} onChange={seek} />
-        <span>{fmt(time.duration)}</span>
+        <span>{fmt(shownCurrent)}</span>
+        <WavySlider label="Seek" value={shownCurrent} max={shownDuration || 1} playing={playing && !loading} onChange={(v) => seek(v + offset)} />
+        <span>{fmt(shownDuration)}</span>
       </div>
     </div>
   );

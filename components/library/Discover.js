@@ -1,12 +1,27 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MdSearch, MdHistory } from 'react-icons/md';
 import { useData } from '@/components/data/DataProvider';
+import { filterAlong } from '@/components/player/queue/relevance';
+import SearchBar from '@/components/ui/SearchBar';
 import Logo from '@/components/ui/Logo';
 import TrackRow from '@/components/tracks/TrackRow';
 import TrackTile from '@/components/tracks/TrackTile';
 import { gridVariants } from '@/components/tracks/variants';
+
+const GENRES = [
+  ['all-music', 'Trending'],
+  ['hip hop', 'Hip hop'],
+  ['electronic', 'Electronic'],
+  ['pop', 'Pop'],
+  ['rnb', 'R&B'],
+  ['rock', 'Rock'],
+  ['lofi', 'Lo-fi'],
+];
+
+const queueable = (list) => filterAlong(list, null);
+
+const Skeletons = ({ n = 6 }) => <div className="shelf">{Array.from({ length: n }).map((_, i) => <div key={i} className="skel tile"><i /><b /><b /></div>)}</div>;
 
 export default function Discover({ name, hidden, request }) {
   const [query, setQuery] = useState('');
@@ -14,6 +29,8 @@ export default function Discover({ name, hidden, request }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [more, setMore] = useState({ seed: null, list: [], busy: false });
+  const [genre, setGenre] = useState('all-music');
+  const [charts, setCharts] = useState({ genre: null, list: [] });
   const seq = useRef(0);
   const inputRef = useRef(null);
   const lib = useData();
@@ -35,7 +52,9 @@ export default function Discover({ name, hidden, request }) {
   }
 
   useEffect(() => {
-    const t = setTimeout(() => (query.trim().length > 1 ? run(query) : !query.trim() && run('')), 400);
+    const trimmed = query.trim();
+    if (trimmed.length > 1) { setBusy(true); setError(''); }
+    const t = setTimeout(() => (trimmed.length > 1 ? run(query) : !trimmed && run('')), 400);
     return () => clearTimeout(t);
   }, [query]);
 
@@ -56,11 +75,19 @@ export default function Discover({ name, hidden, request }) {
     let live = true;
     setMore((m) => ({ ...m, seed, busy: true }));
     const have = new Set(recent.map((t) => t.id));
-    window.mosaic.related(seed.id)
-      .then((list) => live && setMore({ seed, list: list.filter((t) => !have.has(t.id)), busy: false }))
+    window.mosaic.related(seed.id, 40)
+      .then((list) => live && setMore({ seed, list: filterAlong(list, seed).filter((t) => !have.has(t.id)).slice(0, 20), busy: false }))
       .catch(() => live && setMore({ seed, list: [], busy: false }));
     return () => { live = false; };
   }, [seed?.id]);
+
+  useEffect(() => {
+    let live = true;
+    window.mosaic.charts(genre)
+      .then((list) => live && setCharts({ genre, list }))
+      .catch(() => live && setCharts({ genre, list: [] }));
+    return () => { live = false; };
+  }, [genre]);
 
   const searching = query.trim().length > 0;
   const q = query.trim().toLowerCase();
@@ -78,10 +105,7 @@ export default function Discover({ name, hidden, request }) {
         </div>
       </header>
 
-      <form className="search" onSubmit={(e) => { e.preventDefault(); run(query); }}>
-        <MdSearch size={22} />
-        <input ref={inputRef} data-search placeholder="Search SoundCloud and your library…" value={query} onChange={(e) => setQuery(e.target.value)} />
-      </form>
+      <SearchBar value={query} onChange={setQuery} onSubmit={run} busy={busy} inputRef={inputRef} placeholder="Search songs, artists…" />
 
       {searching ? (
         <>
@@ -100,36 +124,44 @@ export default function Discover({ name, hidden, request }) {
             <div className="grid">{Array.from({ length: 12 }).map((_, i) => <div key={i} className="skel"><i /><b /><b /></div>)}</div>
           )}
           {!busy && !error && results.length === 0 && <p className="muted">Nothing found.</p>}
-          <motion.div className="grid" key={`s-${query.trim()}`} initial="hidden" animate="show" variants={gridVariants}>
-            {results.map((t) => <TrackTile key={t.id} t={t} list={results} />)}
+          <motion.div className="grid" animate={{ opacity: busy && results.length ? 0.45 : 1 }} transition={{ duration: 0.15 }} style={{ pointerEvents: busy ? 'none' : undefined }}>
+            {results.map((t) => <TrackTile key={t.id} t={t} list={queueable(results)} />)}
           </motion.div>
         </>
-      ) : recent.length > 0 ? (
+      ) : (
         <>
-          <h3>Your last listening</h3>
-          <motion.div className="grid" initial="hidden" animate="show" variants={gridVariants}>
-            {recent.map((t) => <TrackTile key={t.id} t={t} list={recent} />)}
-          </motion.div>
+          {recent.length > 0 && (
+            <>
+              <h3>Jump back in</h3>
+              <div className="shelf">{recent.map((t) => <TrackTile key={t.id} t={t} list={recent} />)}</div>
+            </>
+          )}
+
+          <div className="feed-head">
+            <h3>{GENRES.find(([g]) => g === genre)[1]}</h3>
+            <div className="chips">
+              {GENRES.map(([g, label]) => <button key={g} className={g === genre ? 'on' : ''} onClick={() => setGenre(g)}>{label}</button>)}
+            </div>
+          </div>
+          {charts.genre !== genre ? (
+            <Skeletons n={8} />
+          ) : charts.list.length === 0 ? (
+            <p className="muted">Couldn’t load this right now.</p>
+          ) : (
+            <motion.div className="shelf" key={genre} initial="hidden" animate="show" variants={gridVariants}>
+              {charts.list.map((t) => <TrackTile key={t.id} t={t} list={queueable(charts.list)} />)}
+            </motion.div>
+          )}
 
           {more.seed && (more.busy || more.list.length > 0) && (
             <>
-              <h3>More like “{more.seed.title}”</h3>
-              {more.busy && more.list.length === 0 ? (
-                <div className="grid">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="skel"><i /><b /><b /></div>)}</div>
-              ) : (
-                <motion.div className="grid" initial="hidden" animate="show" variants={gridVariants}>
-                  {more.list.map((t) => <TrackTile key={t.id} t={t} list={more.list} />)}
-                </motion.div>
+              <h3>Because you played “{more.seed.title}”</h3>
+              {more.busy && more.list.length === 0 ? <Skeletons /> : (
+                <div className="shelf">{more.list.map((t) => <TrackTile key={t.id} t={t} list={more.list} />)}</div>
               )}
             </>
           )}
         </>
-      ) : (
-        <div className="empty">
-          <div className="empty-ico"><MdHistory size={32} /></div>
-          <b>Nothing played yet</b>
-          <p className="muted">Search for a song above, or add your own music under Device.<br />What you listen to shows up here.</p>
-        </div>
       )}
     </div>
   );
