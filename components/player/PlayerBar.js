@@ -1,6 +1,6 @@
 'use client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MdVolumeUp, MdVolumeDown, MdVolumeOff, MdOutlineLyrics, MdLyrics, MdFavorite, MdFavoriteBorder, MdOpenInFull, MdPictureInPictureAlt, MdMusicNote, MdSkipPrevious, MdSkipNext, MdPlayArrow } from 'react-icons/md';
+import { MdVolumeUp, MdVolumeDown, MdVolumeOff, MdOutlineLyrics, MdLyrics, MdFavorite, MdFavoriteBorder, MdOpenInFull, MdPictureInPictureAlt, MdMusicNote, MdSkipPrevious, MdSkipNext, MdPlayArrow, MdOndemandVideo } from 'react-icons/md';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import { useData } from '@/components/data/DataProvider';
 import { useToast } from '@/components/ui/Toast';
@@ -67,6 +67,9 @@ export default function PlayerBar({ lyricsOpen, onToggleLyrics, onOpenNowPlaying
       <Controls />
 
       <div className="tools">
+        {track.source === 'youtube' && (
+          <button className={`icon ${lib.settings.ytVideo ? 'on' : ''}`} title={lib.settings.ytVideo ? 'Hide video' : 'Show video'} onClick={() => lib.setSetting('ytVideo', !lib.settings.ytVideo)}><MdOndemandVideo size={22} /></button>
+        )}
         <TunePopover />
         <button className="icon" title="Mini player (I)" onClick={onToggleMini}><MdPictureInPictureAlt size={20} /></button>
         <button className={`icon ${lyricsOpen ? 'on' : ''}`} title="Lyrics (Y)" onClick={onToggleLyrics}>

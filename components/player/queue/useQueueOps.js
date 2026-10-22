@@ -57,7 +57,7 @@ export default function useQueueOps({ queueRef, setQueue, play, toast }) {
   const startRadio = useCallback(async (track) => {
     toast(`Starting radio from “${track.title}”`);
     try {
-      const related = track.source === 'local' ? [] : await window.mosaic.related(track.id);
+      const related = track.source !== 'soundcloud' ? [] : await window.mosaic.related(track.id);
       play(track, [track, ...related.filter((t) => t.id !== track.id)]);
       if (!related.length) toast('No similar tracks found');
     } catch {

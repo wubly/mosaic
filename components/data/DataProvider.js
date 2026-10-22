@@ -16,6 +16,7 @@ const DEFAULTS = {
     crossfade: 0,
     fadePause: true,
     skipSilence: true,
+    ytVideo: false,
     leveling: false,
     eqOn: false,
     eqGains: [0, 0, 0, 0, 0],

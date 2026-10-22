@@ -5,6 +5,8 @@ import { useData } from '@/components/data/DataProvider';
 import { useToast } from '@/components/ui/Toast';
 import PageHeader from '@/components/ui/PageHeader';
 import Switch from '@/components/ui/Switch';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
+import { useYoutube } from '@/components/youtube/YoutubeProvider';
 import WavySlider from '@/components/player/WavySlider';
 export const SHORTCUTS = [
   ['Space', 'Play / pause'],
@@ -29,6 +31,41 @@ export default function SettingsView({ onReset }) {
   const [perf, setPerf] = useState({ lowMemory: true, startedWith: true });
   const [tray, setTray] = useState(true);
   const [genius, setGenius] = useState(false);
+  const sp = useSpotify();
+  const [clientId, setClientId] = useState('');
+  const [spBusy, setSpBusy] = useState(false);
+  useEffect(() => { if (sp.status) setClientId(sp.status.clientId || ''); }, [sp.status?.clientId]);
+  const spConnect = async () => {
+    setSpBusy(true);
+    try {
+      if (clientId.trim() !== (sp.status?.clientId || '')) await window.mosaic.spSetClientId(clientId);
+      await window.mosaic.spConnect();
+      toast('Spotify connected');
+    } catch (e) { toast(e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+    await sp.refresh().catch(() => {});
+    setSpBusy(false);
+  };
+  const spDisconnect = async () => { await window.mosaic.spDisconnect(); await sp.refresh(); };
+  const yt = useYoutube();
+  const [ytId, setYtId] = useState('');
+  const [ytSecret, setYtSecret] = useState('');
+  const [ytBusy, setYtBusy] = useState(false);
+  useEffect(() => { if (yt.status) setYtId(yt.status.clientId || ''); }, [yt.status?.clientId]);
+  const ytConnect = async () => {
+    setYtBusy(true);
+    try {
+      await window.mosaic.ytSetCredentials(ytId, ytSecret);
+      await window.mosaic.ytConnect();
+      toast('YouTube connected');
+    } catch (e) { toast(e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+    await yt.refresh().catch(() => {});
+    setYtBusy(false);
+  };
+  const ytDisconnect = async () => { await window.mosaic.ytDisconnect(); await yt.refresh(); };
+  const [update, setUpdate] = useState(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => { window.mosaic.getUpdate().then(setUpdate); }, []);
+  const checkUpdate = async () => { setChecking(true); setUpdate(await window.mosaic.checkUpdate()); setChecking(false); };
   useEffect(() => { window.mosaic.getGenius().then(setGenius); }, []);
   useEffect(() => { window.mosaic.getCloseToTray().then(setTray); }, []);
   useEffect(() => { window.mosaic.getPerf().then((p) => setPerf({ lowMemory: p.lowMemory, startedWith: p.lowMemory })); }, []);
@@ -40,6 +77,22 @@ export default function SettingsView({ onReset }) {
     <div className="library">
       <PageHeader title="Settings" />
       <section className="settings">
+        <div className="set-group">
+          <h3>Updates</h3>
+          <div className={`set-card ${update?.available ? 'update-ready' : ''}`}>
+            <div className="switch-row static">
+              <span>
+                {update?.available
+                  ? <><b>Mosaic {update.latest} is ready</b><em>You’re on {update.current}. The new version is a download away; nothing is installed automatically.</em></>
+                  : <><b>Mosaic {update?.current ?? ''}</b><em>{update?.error ? `Couldn’t check: ${update.error}` : update?.checkedAt ? 'You’re up to date.' : 'Checking for updates…'}</em></>}
+              </span>
+              {update?.available
+                ? <button className="primary" onClick={() => window.mosaic.openUpdate()}>Update</button>
+                : <button className="tonal" disabled={checking} onClick={checkUpdate}>{checking ? 'Checking…' : 'Check now'}</button>}
+            </div>
+          </div>
+        </div>
+
         <div className="set-group">
           <h3>Playback</h3>
           <div className="set-card">
@@ -98,15 +151,72 @@ export default function SettingsView({ onReset }) {
           </div>
         </div>
         <div className="set-group">
-          <h3>Lyrics</h3>
+          <h3>Beta</h3>
           <div className="set-card">
-        <label className="switch-row">
-          <span>
-            <b>Genius lyrics <span className="warn">(beta)</span></b>
-            <em>When LRCLIB has nothing, scrape plain lyrics from genius.com. No timing, and it can break whenever Genius changes its pages.</em>
-          </span>
-          <Switch on={genius} onChange={(v) => { setGenius(v); window.mosaic.setGenius(v); }} />
-        </label>
+            <label className="switch-row">
+              <span><b>Beta features</b><em>Early features that may be rough or break. Turn this on to see them below.</em></span>
+              <Switch on={sp.beta} onChange={sp.setBeta} />
+            </label>
+            {sp.beta && (
+              <>
+                <label className="switch-row">
+                  <span>
+                    <b>Genius lyrics</b>
+                    <em>When LRCLIB has nothing, scrape plain lyrics from genius.com. No timing, and it can break whenever Genius changes its pages.</em>
+                  </span>
+                  <Switch on={genius} onChange={(v) => { setGenius(v); window.mosaic.setGenius(v); }} />
+                </label>
+                <div className="sp-beta">
+                  <span>
+                    <b>Spotify</b>
+                    <em>
+                      {sp.status?.connected
+                        ? <>Connected as {sp.status.user}{sp.status.premium ? '' : '. Playing inside Mosaic needs Spotify Premium.'}</>
+                        : 'Search and play Spotify tracks inside Mosaic. Needs Spotify Premium and your own client ID.'}
+                    </em>
+                  </span>
+                  {sp.status?.connected ? (
+                    <button className="tonal" onClick={spDisconnect}>Disconnect</button>
+                  ) : (
+                    <button className="primary" disabled={spBusy || !clientId.trim()} onClick={spConnect}>{spBusy ? 'Waiting for Spotify…' : 'Connect'}</button>
+                  )}
+                </div>
+                {!sp.status?.connected && (
+                  <div className="sp-setup">
+                    <input className="set-input" placeholder="Spotify client ID" value={clientId} onChange={(e) => setClientId(e.target.value)} spellCheck={false} />
+                    <p className="muted small">
+                      Make an app at <a href="https://developer.spotify.com/dashboard" onClick={(e) => { e.preventDefault(); window.mosaic.openExternal('https://developer.spotify.com/dashboard'); }}>developer.spotify.com/dashboard</a>,
+                      add <code>{sp.status?.redirect || 'http://127.0.0.1:8898/callback'}</code> as a redirect URI, tick “Web Playback SDK”, then paste the client ID here.
+                    </p>
+                  </div>
+                )}
+                <div className="sp-beta">
+                  <span>
+                    <b>YouTube</b>
+                    <em>
+                      {yt.status?.connected
+                        ? `Connected as ${yt.status.user}. Plays as music; use the video button in the player bar to show the picture.`
+                        : 'Search YouTube music and play your liked videos. Needs your own Google client ID, and the API has a daily search limit.'}
+                    </em>
+                  </span>
+                  {yt.status?.connected ? (
+                    <button className="tonal" onClick={ytDisconnect}>Disconnect</button>
+                  ) : (
+                    <button className="primary" disabled={ytBusy || !ytId.trim()} onClick={ytConnect}>{ytBusy ? 'Waiting for Google…' : 'Connect'}</button>
+                  )}
+                </div>
+                {!yt.status?.connected && (
+                  <div className="sp-setup">
+                    <input className="set-input" placeholder="Google client ID" value={ytId} onChange={(e) => setYtId(e.target.value)} spellCheck={false} />
+                    <input className="set-input" placeholder={yt.status?.hasSecret ? 'Client secret (saved)' : 'Client secret'} value={ytSecret} onChange={(e) => setYtSecret(e.target.value)} spellCheck={false} />
+                    <p className="muted small">
+                      In <a href="https://console.cloud.google.com/apis/credentials" onClick={(e) => { e.preventDefault(); window.mosaic.openExternal('https://console.cloud.google.com/apis/credentials'); }}>Google Cloud</a>: enable the YouTube Data API v3,
+                      add yourself as a test user on the OAuth consent screen, then create an OAuth client of type “Desktop app” and paste its ID and secret here.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
         <div className="set-group">
@@ -149,7 +259,7 @@ export default function SettingsView({ onReset }) {
         <div className="set-group">
           <h3>About</h3>
           <div className="set-card">
-        <p className="muted">Mosaic 0.2 · lyrics by <a href="https://lrclib.net" onClick={(e) => { e.preventDefault(); window.mosaic.openExternal('https://lrclib.net'); }}>LRCLIB</a> · colour from your artwork via Material You.</p>
+        <p className="muted">Mosaic {update?.current ?? ''} · lyrics by <a href="https://lrclib.net" onClick={(e) => { e.preventDefault(); window.mosaic.openExternal('https://lrclib.net'); }}>LRCLIB</a> · colour from your artwork via Material You.</p>
           </div>
         </div>
       </section>

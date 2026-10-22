@@ -7,6 +7,10 @@ import useAudioGraph from '@/components/player/audio/useAudioGraph';
 import useSleepTimer from '@/components/player/audio/useSleepTimer';
 import { resolveSource, attachStream, detachStream } from '@/components/player/audio/stream';
 import { filterAlong } from '@/components/player/queue/relevance';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
+import useSpotifyPlayer from '@/components/player/spotify/useSpotifyPlayer';
+import { useYoutube } from '@/components/youtube/YoutubeProvider';
+import useYoutubePlayer from '@/components/player/youtube/useYoutubePlayer';
 import useQueueState from '@/components/player/queue/useQueueState';
 import useQueueOps from '@/components/player/queue/useQueueOps';
 import usePresenceSync from '@/components/player/system/usePresenceSync';
@@ -31,10 +35,40 @@ export default function PlayerProvider({ children }) {
   const deckB = useRef(null);
   const activeDeck = useRef(0);
   const hlsRefs = useRef([{ current: null }, { current: null }]).current;
-  const audioRef = useMemo(() => ({
-    get current() { return [deckA.current, deckB.current][activeDeck.current]; },
-    get all() { return [deckA.current, deckB.current]; },
+  const spotifyActive = useRef(false);
+  const spRef = useRef(null);
+  const ytRef = useRef(null);
+  const ytBox = useRef(null);
+  const slots = useRef({});
+  const videoSlot = useCallback((name) => (el) => { if (el) slots.current[name] = el; else delete slots.current[name]; }, []);
+  const engineKind = useRef(null);
+  const engineRef = useMemo(() => ({
+    get current() { return engineKind.current === 'youtube' ? ytRef.current : engineKind.current === 'spotify' ? spRef.current : null; },
   }), []);
+  const spPos = useRef({ pos: 0, at: 0, paused: true, duration: 0, volume: 0.8 });
+  const spEndedFor = useRef(null);
+  const trackRef = useRef(null);
+
+  const realAudio = () => [deckA.current, deckB.current][activeDeck.current];
+  const spotifyShim = useMemo(() => ({
+    get currentTime() { const s = spPos.current; return (s.pos + (s.paused ? 0 : Date.now() - s.at)) / 1000; },
+    set currentTime(v) { spPos.current = { ...spPos.current, pos: v * 1000, at: Date.now() }; engineRef.current?.seek(v * 1000); },
+    get duration() { return spPos.current.duration / 1000; },
+    get paused() { return spPos.current.paused; },
+    get volume() { return spPos.current.volume; },
+    set volume(v) { spPos.current.volume = v; engineRef.current?.setVolume(v); },
+    seeking: false,
+    defaultPlaybackRate: 1,
+    playbackRate: 1,
+    preservesPitch: true,
+    play() { engineRef.current?.resume(); return Promise.resolve(); },
+    pause() { engineRef.current?.pause(); },
+    getAttribute: () => 'spotify',
+  }), []);
+  const audioRef = useMemo(() => ({
+    get current() { return spotifyActive.current ? spotifyShim : [deckA.current, deckB.current][activeDeck.current]; },
+    get all() { return [deckA.current, deckB.current]; },
+  }), [spotifyShim]);
   const hlsRef = useMemo(() => ({
     get current() { return hlsRefs[activeDeck.current].current; },
     set current(value) { hlsRefs[activeDeck.current].current = value; },
@@ -51,6 +85,7 @@ export default function PlayerProvider({ children }) {
 
   const { queue, queueRef, setQueue } = useQueueState();
   const [track, setTrack] = useState(null);
+  trackRef.current = track;
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -62,8 +97,45 @@ export default function PlayerProvider({ children }) {
   speedRef.current = settings.speed;
   const { sleep, sleepLeft, setSleep, takeEndOfTrack } = useSleepTimer(audioRef, toast);
 
-  const load = useCallback(async (target, { seekTo = 0, autoplay = true, fadeIn = 0 } = {}) => {
-    const audio = audioRef.current;
+  const loadExternal = async (target, { seekTo = 0, autoplay = true } = {}) => {
+    const token = ++loadSeq.current;
+    const engine = target.source === 'youtube' ? ytRef.current : spRef.current;
+    if (engineKind.current && engineKind.current !== target.source) engineRef.current?.pause();
+    engineKind.current = target.source;
+    const idle = realAudio();
+    cancelFade(idle);
+    idle.pause();
+    detachStream(hlsRef);
+    idle.removeAttribute('src');
+    idle.load();
+    silenceRef.current = null;
+    spotifyActive.current = true;
+    spPos.current = { ...spPos.current, pos: seekTo * 1000, at: Date.now(), paused: true, duration: target.duration };
+
+    setTrack(target);
+    setError('');
+    setTime({ current: seekTo, duration: target.duration / 1000, offset: 0, tail: 0 });
+    if (!autoplay) { loadedRef.current = false; setLoading(false); return; }
+
+    loadedRef.current = true;
+    setLoading(true);
+    try {
+      if (engine.enabled === false) throw new Error('Connect this service in Settings → Beta first');
+      await engine.start(target, seekTo * 1000);
+      engine.setVolume(settingsRef.current.volume);
+    } catch (e) {
+      if (token !== loadSeq.current) return;
+      setError(e.message || 'Could not play this track');
+      setLoading(false);
+    }
+  };
+
+  const load = useCallback(async (target, options = {}) => {
+    if (target.source === 'spotify' || target.source === 'youtube') return loadExternal(target, options);
+    if (spotifyActive.current) { spotifyActive.current = false; engineRef.current?.pause(); }
+
+    const { seekTo = 0, autoplay = true, fadeIn = 0 } = options;
+    const audio = realAudio();
     const token = ++loadSeq.current;
     loadedRef.current = true;
 
@@ -219,6 +291,90 @@ export default function PlayerProvider({ children }) {
     },
   });
 
+  const { enabled: spotifyEnabled } = useSpotify();
+  const { enabled: youtubeEnabled } = useYoutube();
+
+  const onEngineState = (kind, st) => {
+    if (!spotifyActive.current || engineKind.current !== kind) return;
+    spPos.current = { ...spPos.current, pos: st.position, at: Date.now(), paused: st.paused, duration: st.duration };
+    setPlaying(!st.paused);
+    if (!st.loading) setLoading(false);
+    setTime({ current: st.position / 1000, duration: st.duration / 1000, offset: 0, tail: 0 });
+
+    const key = `${trackRef.current?.id}:${loadSeq.current}`;
+    if (st.ended && spEndedFor.current !== key) {
+      spEndedFor.current = key;
+      step(1, true);
+    }
+  };
+
+  const onSpotifyState = (state) => {
+    if (!state || !spotifyActive.current || engineKind.current !== 'spotify') return;
+    const before = spPos.current;
+    const wasPlayingTo = before.pos + (before.paused ? 0 : Date.now() - before.at);
+    const nearEnd = before.duration > 0 && wasPlayingTo >= before.duration - 4000;
+    const now = trackRef.current;
+    const ended = nearEnd && state.paused && state.position === 0 && !!now?.uri
+      && state.track_window.previous_tracks.some((t) => t.uri === now.uri);
+    onEngineState('spotify', { position: state.position, duration: state.duration, paused: state.paused, loading: state.loading, ended });
+  };
+
+  const sp = useSpotifyPlayer({ enabled: spotifyEnabled, volume: settings.volume, onState: onSpotifyState });
+  spRef.current = sp;
+  const yt = useYoutubePlayer({ enabled: youtubeEnabled, boxRef: ytBox, volume: settings.volume, onState: (st) => onEngineState('youtube', st) });
+  ytRef.current = yt;
+
+  useEffect(() => {
+    const box = ytBox.current;
+    if (!box || track?.source !== 'youtube' || !settings.ytVideo) return;
+
+    let frame;
+    let last = '';
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      const nowPlaying = slots.current.nowplaying;
+      const el = nowPlaying || slots.current.lyrics;
+      if (!el) { box.classList.remove('on'); last = ''; return; }
+
+      const r = el.getBoundingClientRect();
+      const z = nowPlaying ? 61 : 30;
+      box.classList.add('on');
+      const key = [r.left, r.top, r.width, r.height, z].join();
+      if (key === last) return;
+      last = key;
+
+      const iw = Math.max(r.width, (r.height * 16) / 9);
+      Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, zIndex: z, borderRadius: getComputedStyle(el).borderRadius });
+      box.style.setProperty('--iw', `${iw}px`);
+      box.style.setProperty('--ih', `${(iw * 9) / 16}px`);
+    };
+    tick();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      box.classList.remove('on');
+      box.removeAttribute('style');
+    };
+  }, [track?.source, settings.ytVideo]);
+
+  useEffect(() => {
+    const message = track?.source === 'youtube' ? yt.error : track?.source === 'spotify' ? sp.error : '';
+    if (!message || !spotifyActive.current) return;
+    setError(message);
+    setLoading(false);
+  }, [sp.error, yt.error]);
+
+  useEffect(() => {
+    if (track?.source !== 'spotify' && track?.source !== 'youtube') return;
+    if (!playing) return;
+    const timer = setInterval(() => {
+      const current = spotifyShim.currentTime;
+      setTime((t) => ({ ...t, current, offset: 0, tail: 0 }));
+      savePosition(current);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [track?.source, playing]);
+
   useListeningStats(track, playing);
   useSystemMedia({ track, playing, commands: { toggle, next: () => step(1), prev: () => step(-1), stop, seek } });
   const noteSeek = usePresenceSync({ audioRef, track, playing, loading, enabled: settings.presence });
@@ -253,6 +409,7 @@ export default function PlayerProvider({ children }) {
     const prefs = settingsRef.current;
     if (prefs.repeat === 'one' || sleep.mode === 'eot') return;
     if (nextIndex(state, 1, prefs) === null) return;
+    if (state.list[state.index + 1]?.source === 'spotify') return;
     crossfadeFor.current = track.id + loadSeq.current;
     crossfading.current = seconds;
     handOver(Math.max(0.5, left - 0.1));
@@ -260,10 +417,10 @@ export default function PlayerProvider({ children }) {
   };
 
   const handOver = (ms) => {
-    const outgoing = audioRef.current;
+    const outgoing = realAudio();
     const outgoingHls = hlsRefs[activeDeck.current];
     activeDeck.current ^= 1;
-    const incoming = audioRef.current;
+    const incoming = realAudio();
     incoming.defaultPlaybackRate = settingsRef.current.speed;
     incoming.playbackRate = settingsRef.current.speed;
 
@@ -286,7 +443,7 @@ export default function PlayerProvider({ children }) {
   const value = {
     track, queue, playing, loading, error,
     volume: settings.volume, shuffle: settings.shuffle, repeat: settings.repeat, speed: settings.speed,
-    sleep, sleepLeft, audioRef, getAnalyser: graph.getAnalyser,
+    sleep, sleepLeft, audioRef, videoSlot, getAnalyser: graph.getAnalyser,
     play, playIndex, toggle, stop, seek, setVolume, setSpeed, setSleep, toggleShuffle, cycleRepeat,
     next: () => step(1), prev: () => step(-1),
     ...queueOps,
@@ -310,6 +467,7 @@ export default function PlayerProvider({ children }) {
             onError={mine(i, onError)}
           />
         ))}
+        <div ref={ytBox} className="yt-box" />
         {children}
       </TimeCtx.Provider>
     </PlayerCtx.Provider>

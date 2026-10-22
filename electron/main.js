@@ -1,4 +1,4 @@
-const { app } = require('electron');
+const { app, components } = require('electron');
 const { applyFlags } = require('./core/flags');
 
 applyFlags();
@@ -13,6 +13,9 @@ const { registerLibraryIpc } = require('./library/ipc');
 const { registerSpotifyIpc } = require('./spotify/ipc');
 const { createTray } = require('./tray');
 const { setupMac } = require('./mac');
+const { registerUpdateIpc } = require('./update');
+const { registerSpotifySdkIpc } = require('./spotify/sdk');
+const { registerYoutubeIpc } = require('./youtube/ipc');
 const { registerDiscordIpc } = require('./discord/presence');
 
 registerSchemes();
@@ -22,7 +25,8 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', focusMainWindow);
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    try { await components?.whenReady(); } catch {}
     registerHandlers();
     registerAppIpc();
     registerWindowIpc();
@@ -31,6 +35,9 @@ if (!app.requestSingleInstanceLock()) {
     registerLibraryIpc();
     registerSpotifyIpc();
     registerDiscordIpc();
+    registerUpdateIpc();
+    registerSpotifySdkIpc();
+    registerYoutubeIpc();
 
     createWindow();
     registerMediaKeys();

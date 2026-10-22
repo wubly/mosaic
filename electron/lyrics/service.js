@@ -127,7 +127,7 @@ async function getLyrics(args) {
     found = await autoLyrics(args);
   }
 
-  if (!found && readConfig().genius) {
+  if (!found && readConfig().beta && readConfig().genius) {
     const plain = await geniusLyrics(args.title, args.artist);
     if (plain) {
       const result = { synced: [], plain, meta: { origin: 'genius', id: 'genius', title: args.title, artist: args.artist, album: '', kind: 'plain' } };

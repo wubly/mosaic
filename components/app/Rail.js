@@ -2,7 +2,7 @@
 import { motion } from 'framer-motion';
 import {
   MdExplore, MdOutlineExplore, MdQueueMusic, MdOutlineQueueMusic, MdOutlineSettings, MdSettings,
-  MdLibraryMusic, MdOutlineLibraryMusic, MdFolder, MdFolderOpen, MdPlaylistPlay, MdOutlinePlaylistPlay,
+  MdLibraryMusic, MdOutlineLibraryMusic, MdAlbum, MdOutlineAlbum, MdFolder, MdFolderOpen, MdPlaylistPlay, MdOutlinePlaylistPlay,
 } from 'react-icons/md';
 
 const TOP = [
@@ -12,6 +12,7 @@ const TOP = [
   { id: 'local', label: 'Device', icon: MdFolder, activeIcon: MdFolderOpen },
   { id: 'queue', label: 'Queue', icon: MdOutlineQueueMusic, activeIcon: MdQueueMusic },
 ];
+const SPOTIFY = { id: 'spotify', label: 'Spotify', icon: MdOutlineAlbum, activeIcon: MdAlbum };
 const BOTTOM = [{ id: 'settings', label: 'Settings', icon: MdOutlineSettings, activeIcon: MdSettings }];
 
 function RailItem({ item, active, badge, onClick }) {
@@ -29,7 +30,7 @@ function RailItem({ item, active, badge, onClick }) {
   );
 }
 
-export default function Rail({ view, onChange, queueCount }) {
+export default function Rail({ view, onChange, queueCount, spotify }) {
   const render = (item) => (
     <RailItem key={item.id} item={item} active={view === item.id} badge={item.id === 'queue' ? queueCount : 0} onClick={() => onChange(item.id)} />
   );
@@ -37,6 +38,7 @@ export default function Rail({ view, onChange, queueCount }) {
   return (
     <nav className="rail">
       {TOP.map(render)}
+      {spotify && render(SPOTIFY)}
       <span className="grow" />
       {BOTTOM.map(render)}
     </nav>

@@ -634,3 +634,33 @@ kbd { font: 500 12px var(--md-font); background: var(--md-surface-container-high
 
 .lyr-wrap.empty:not(.large):not(.bare) .lyr-head { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
 .lyr-wrap.empty:not(.large):not(.bare) .lyrics { display: none; }
+
+.set-card.update-ready { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.set-card.update-ready em { color: inherit; opacity: .8; }
+.set-card.update-ready .primary { background: var(--md-primary); color: var(--md-on-primary); }
+.set-card .tonal:disabled { opacity: .6; }
+
+.sp-beta { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) 55%, transparent); }
+.sp-beta b { display: block; font-weight: 500; }
+.sp-beta em { display: block; font-style: normal; font-size: 13px; margin-top: 2px; color: var(--md-on-surface-variant); max-width: 420px; }
+.sp-setup { padding: 0 0 14px; display: grid; gap: 8px; }
+.set-input { height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--md-outline-variant); background: var(--md-surface-container-high); color: var(--md-on-surface); font-size: 14px; outline: none; }
+.set-input:focus { border-color: var(--md-primary); }
+.sp-setup code { font-size: 12px; user-select: text; }
+
+.beta-tag { margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 10px; letter-spacing: .4px; text-transform: uppercase; vertical-align: middle; background: var(--md-primary-container); color: var(--md-on-primary-container); }
+
+.tile.round .art { border-radius: 50%; }
+.tile.round .title, .tile.round .artist { text-align: center; }
+.sp-cover { width: 168px; height: 168px; flex: none; border-radius: 16px; background: var(--md-surface-container-highest) center / cover; }
+.sp-cover.round { border-radius: 50%; }
+.sp-head .pl-info a { color: inherit; text-decoration: underline; }
+
+
+.yt-box { position: fixed; left: -9999px; top: 0; width: 320px; height: 180px; overflow: hidden; background: #000; }
+.yt-box.on { box-shadow: 0 12px 32px #0006; }
+.yt-box iframe { position: absolute; left: 50%; top: 50%; width: var(--iw, 100%); height: var(--ih, 100%); transform: translate(-50%, -50%); border: 0; display: block; }
+
+.yt-box iframe { pointer-events: none; }
+.np-art[data-video] { aspect-ratio: 16 / 9; width: min(68vh, 100%); }
+.lyr-art[data-video] { width: min(300px, 100%); height: auto; aspect-ratio: 16 / 9; }

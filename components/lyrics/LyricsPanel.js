@@ -2,12 +2,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MdSubtitles, MdExpandMore, MdLyrics } from 'react-icons/md';
+import { useData } from '@/components/data/DataProvider';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import LyricsPicker, { KIND_LABEL } from '@/components/lyrics/LyricsPicker';
 import { buildTimings, clamp01 } from '@/components/lyrics/timing';
 
 export default function LyricsPanel({ large = false, bare = false }) {
-  const { track, audioRef, seek } = usePlayer();
+  const { track, audioRef, seek, videoSlot } = usePlayer();
+  const lib = useData();
   const [lyrics, setLyrics] = useState(null);
   const [active, setActive] = useState(-1);
   const boxRef = useRef(null);
@@ -116,7 +118,7 @@ export default function LyricsPanel({ large = false, bare = false }) {
     <div className={`lyr-wrap ${large ? 'large' : ''} ${bare ? 'bare' : ''} ${empty ? 'empty' : ''}`}>
       {!large && !bare && (
         <header className="lyr-head">
-          <motion.div key={track.id} className="lyr-art" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} style={{ backgroundImage: (track.thumb || track.artwork) ? `url(${track.thumb || track.artwork})` : undefined }} />
+          <motion.div ref={videoSlot('lyrics')} key={track.id} className="lyr-art" data-video={track.source === 'youtube' && lib.settings.ytVideo ? '' : undefined} initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} style={{ backgroundImage: (track.thumb || track.artwork) ? `url(${track.thumb || track.artwork})` : undefined }} />
           <h3>{track.title}</h3>
           <p>{track.artist}</p>
           {sourcePill}

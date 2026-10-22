@@ -18,6 +18,8 @@ import MiniPlayer from '@/components/player/MiniPlayer';
 import ImportDialog from '@/components/playlists/ImportDialog';
 import CommandPalette from '@/components/app/CommandPalette';
 import Ambient from '@/components/app/Ambient';
+import SpotifyView from '@/components/spotify/SpotifyView';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
 import Rail from '@/components/app/Rail';
 import Resizer from '@/components/app/Resizer';
 import DropVeil from '@/components/app/DropVeil';
@@ -35,6 +37,7 @@ export default function Shell({ name, onReset }) {
   const { queue, track } = player;
   const lib = useData();
   const toast = useToast();
+  const spotify = useSpotify();
 
   const [view, setView] = useState('discover');
   const [nowPlaying, setNowPlaying] = useState(false);
@@ -49,6 +52,8 @@ export default function Shell({ name, onReset }) {
   const sizes = usePanelSizes();
 
   useEffect(() => { window.mosaic.setMini(mini); }, [mini]);
+  useEffect(() => { spotify.registerNav(() => { setView('spotify'); setNowPlaying(false); }); }, [spotify.registerNav]);
+  useEffect(() => { if (view === 'spotify' && !spotify.enabled) setView('discover'); }, [view, spotify.enabled]);
 
   const toggleMini = () => setMini((value) => !value);
 
@@ -99,7 +104,7 @@ export default function Shell({ name, onReset }) {
     <div className="app">
       <Ambient />
       <Titlebar />
-      <Rail view={view} onChange={setView} queueCount={queue.list.length} />
+      <Rail view={view} onChange={setView} queueCount={queue.list.length} spotify={spotify.enabled} />
 
       <main className="glass main">
         <Discover name={name} hidden={view !== 'discover'} request={searchRequest} />
@@ -107,6 +112,7 @@ export default function Shell({ name, onReset }) {
         {view === 'playlists' && <LibraryView key="playlists" initialTab="playlists" target={libraryTarget} onImport={actions.importPlaylist} />}
         {view === 'local' && <LocalView />}
         {view === 'queue' && <Queue />}
+        {view === 'spotify' && <SpotifyView />}
         {view === 'settings' && <SettingsView onReset={onReset} />}
       </main>
 

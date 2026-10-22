@@ -38,6 +38,10 @@ function createWindow() {
     openExternalHttps(url);
     return { action: 'deny' };
   });
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const combo = input.type === 'keyDown' && (input.key === 'F12' || (input.key.toLowerCase() === 'i' && input.shift && (input.control || (IS_MAC && input.meta))) || (IS_MAC && input.alt && input.meta && input.key.toLowerCase() === 'i'));
+    if (combo) { mainWindow.webContents.toggleDevTools(); event.preventDefault(); }
+  });
   mainWindow.loadURL(DEV ? DEV_URL : APP_URL);
   mainWindow.on('close', (event) => {
     const { closeToTray, isQuitting } = require('./tray');

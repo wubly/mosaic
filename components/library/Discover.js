@@ -3,6 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useData } from '@/components/data/DataProvider';
 import { filterAlong } from '@/components/player/queue/relevance';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
+import { AlbumCards, ArtistCards } from '@/components/spotify/SpotifyView';
+import { useYoutube } from '@/components/youtube/YoutubeProvider';
 import SearchBar from '@/components/ui/SearchBar';
 import Logo from '@/components/ui/Logo';
 import TrackRow from '@/components/tracks/TrackRow';
@@ -19,6 +22,7 @@ const GENRES = [
   ['lofi', 'Lo-fi'],
 ];
 
+const NO_SP = { tracks: [], artists: [], albums: [] };
 const queueable = (list) => filterAlong(list, null);
 
 const Skeletons = ({ n = 6 }) => <div className="shelf">{Array.from({ length: n }).map((_, i) => <div key={i} className="skel tile"><i /><b /><b /></div>)}</div>;
@@ -31,6 +35,12 @@ export default function Discover({ name, hidden, request }) {
   const [more, setMore] = useState({ seed: null, list: [], busy: false });
   const [genre, setGenre] = useState('all-music');
   const [charts, setCharts] = useState({ genre: null, list: [] });
+  const spotify = useSpotify();
+  const youtube = useYoutube();
+  const [ytResults, setYtResults] = useState([]);
+  const [ytLiked, setYtLiked] = useState([]);
+  const [spResults, setSpResults] = useState({ tracks: [], artists: [], albums: [] });
+  const [spSaved, setSpSaved] = useState([]);
   const seq = useRef(0);
   const inputRef = useRef(null);
   const lib = useData();
@@ -38,7 +48,9 @@ export default function Discover({ name, hidden, request }) {
   async function run(q) {
     q = q.trim();
     const id = ++seq.current;
-    if (!q) { setResults([]); setBusy(false); return; }
+    if (!q) { setResults([]); setSpResults(NO_SP); setYtResults([]); setBusy(false); return; }
+    if (youtube.enabled) window.mosaic.ytSearch(q).then((r) => id === seq.current && setYtResults(r)).catch(() => id === seq.current && setYtResults([]));
+    if (spotify.enabled) window.mosaic.spSearch(q).then((r) => id === seq.current && setSpResults(r)).catch(() => id === seq.current && setSpResults(NO_SP));
     setBusy(true);
     setError('');
     try {
@@ -89,6 +101,20 @@ export default function Discover({ name, hidden, request }) {
     return () => { live = false; };
   }, [genre]);
 
+  useEffect(() => {
+    if (!spotify.enabled) { setSpSaved([]); return; }
+    let live = true;
+    window.mosaic.spLibrary().then((lib) => live && setSpSaved(lib.saved)).catch(() => {});
+    return () => { live = false; };
+  }, [spotify.enabled]);
+
+  useEffect(() => {
+    if (!youtube.enabled) { setYtLiked([]); return; }
+    let live = true;
+    window.mosaic.ytLibrary().then((lib) => live && setYtLiked(lib.liked)).catch(() => {});
+    return () => { live = false; };
+  }, [youtube.enabled]);
+
   const searching = query.trim().length > 0;
   const q = query.trim().toLowerCase();
   const deviceHits = useMemo(
@@ -116,6 +142,22 @@ export default function Discover({ name, hidden, request }) {
             </>
           )}
 
+          {spResults.artists.length > 0 && (<><h3>Spotify artists <span className="beta-tag">beta</span></h3><ArtistCards artists={spResults.artists} go={spotify.go} /></>)}
+          {spResults.albums.length > 0 && (<><h3>Spotify albums</h3><AlbumCards albums={spResults.albums} go={spotify.go} /></>)}
+          {spResults.tracks.length > 0 && (
+            <>
+              <h3>Spotify songs</h3>
+              <div className="shelf">{spResults.tracks.map((t) => <TrackTile key={t.id} t={t} list={spResults.tracks} />)}</div>
+            </>
+          )}
+
+          {ytResults.length > 0 && (
+            <>
+              <h3>On YouTube <span className="beta-tag">beta</span></h3>
+              <div className="shelf">{ytResults.map((t) => <TrackTile key={t.id} t={t} list={ytResults} />)}</div>
+            </>
+          )}
+
           <h3>{busy ? 'Searching…' : `Results for “${query.trim()}”`}</h3>
           <AnimatePresence>
             {error && <motion.div className="error" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{error}</motion.div>}
@@ -134,6 +176,20 @@ export default function Discover({ name, hidden, request }) {
             <>
               <h3>Jump back in</h3>
               <div className="shelf">{recent.map((t) => <TrackTile key={t.id} t={t} list={recent} />)}</div>
+            </>
+          )}
+
+          {spSaved.length > 0 && (
+            <>
+              <h3>Your Spotify likes <span className="beta-tag">beta</span></h3>
+              <div className="shelf">{spSaved.map((t) => <TrackTile key={t.id} t={t} list={spSaved} />)}</div>
+            </>
+          )}
+
+          {ytLiked.length > 0 && (
+            <>
+              <h3>Liked on YouTube <span className="beta-tag">beta</span></h3>
+              <div className="shelf">{ytLiked.map((t) => <TrackTile key={t.id} t={t} list={ytLiked} />)}</div>
             </>
           )}
 

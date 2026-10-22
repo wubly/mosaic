@@ -1,6 +1,6 @@
 {
   "name": "mosaic",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Mosaic — a SoundCloud music player",
   "main": "electron/main.js",
@@ -31,7 +31,9 @@
     "win": {
       "target": "nsis",
       "icon": "build/icon.ico"
-    }
+    },
+    "electronDist": "node_modules/electron/dist",
+    "electronVersion": "44.5.1"
   },
   "dependencies": {
     "@material/material-color-utilities": "^0.3.0",
@@ -47,7 +49,7 @@
   "devDependencies": {
     "concurrently": "^10.0.6",
     "cross-env": "^10.1.0",
-    "electron": "^44.9.2",
+    "electron": "github:castlabs/electron-releases#v44.5.1+wvcus",
     "electron-builder": "^26.15.3",
     "wait-on": "^9.5.1"
   }

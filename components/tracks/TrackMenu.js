@@ -2,11 +2,12 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  MdPlayArrow, MdQueueMusic, MdFavorite, MdFavoriteBorder, MdPlaylistAdd, MdSensors, MdOpenInNew, MdPlaylistPlay, MdAdd, MdChevronRight, MdLink,
+  MdPlayArrow, MdQueueMusic, MdFavorite, MdFavoriteBorder, MdPlaylistAdd, MdSensors, MdOpenInNew, MdPlaylistPlay, MdAdd, MdChevronRight, MdLink, MdPerson, MdAlbum,
 } from 'react-icons/md';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import { useData } from '@/components/data/DataProvider';
 import { useToast } from '@/components/ui/Toast';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
 
 const Ctx = createContext(() => {});
 export const useTrackMenu = () => useContext(Ctx);
@@ -19,6 +20,7 @@ export default function TrackMenuProvider({ children }) {
   const player = usePlayer();
   const lib = useData();
   const toast = useToast();
+  const spotify = useSpotify();
 
   const open = useCallback((track, x, y, extra = []) => {
     setSub(false);
@@ -80,9 +82,11 @@ export default function TrackMenuProvider({ children }) {
                   {liked ? <MdFavorite size={20} className="liked" /> : <MdFavoriteBorder size={20} />} {liked ? 'Unlike' : 'Like'}
                 </button>
                 <button onClick={() => setSub(true)}><MdPlaylistAdd size={20} /> Add to playlist <MdChevronRight size={20} className="end" /></button>
-                {t.source !== 'local' && <button onClick={act(() => player.startRadio(t))}><MdSensors size={20} /> Start radio</button>}
+                {t.source === 'spotify' && t.artistId && <button onClick={act(() => spotify.go({ type: 'artist', id: t.artistId }))}><MdPerson size={20} /> Go to artist</button>}
+                {t.source === 'spotify' && t.albumId && <button onClick={act(() => spotify.go({ type: 'album', id: t.albumId }))}><MdAlbum size={20} /> Go to album</button>}
+                {t.source === 'soundcloud' && <button onClick={act(() => player.startRadio(t))}><MdSensors size={20} /> Start radio</button>}
                 {t.permalink && <hr />}
-                {t.permalink && <button onClick={act(() => window.mosaic.openExternal(t.permalink))}><MdOpenInNew size={20} /> Open on SoundCloud</button>}
+                {t.permalink && <button onClick={act(() => window.mosaic.openExternal(t.permalink))}><MdOpenInNew size={20} /> Open on {({ spotify: 'Spotify', youtube: 'YouTube' })[t.source] || 'SoundCloud'}</button>}
                 {t.permalink && <button onClick={act(() => { navigator.clipboard.writeText(t.permalink); toast('Link copied'); })}><MdLink size={20} /> Copy link</button>}
                 {menu.extra.length > 0 && <hr />}
                 {menu.extra.map((x) => (

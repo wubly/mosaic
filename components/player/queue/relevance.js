@@ -5,7 +5,7 @@ const MAX = 12 * 60_000;
 const clean = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 export function fitsAlong(candidate, seed) {
-  if (candidate.source === 'local') return true;
+  if (candidate.source !== 'soundcloud') return true;
   const length = candidate.duration || 0;
   const max = Math.max(MAX, (seed?.duration || 0) * 1.5);
 

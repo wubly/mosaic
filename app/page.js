@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import DataProvider from '@/components/data/DataProvider';
 import ToastProvider from '@/components/ui/Toast';
+import SpotifyProvider from '@/components/spotify/SpotifyProvider';
+import YoutubeProvider from '@/components/youtube/YoutubeProvider';
 import PlayerProvider from '@/components/player/PlayerProvider';
 import TrackMenuProvider from '@/components/tracks/TrackMenu';
 import Shell from '@/components/app/Shell';
@@ -40,6 +42,8 @@ export default function Page() {
   return (
     <DataProvider>
       <ToastProvider>
+        <SpotifyProvider>
+        <YoutubeProvider>
         <PlayerProvider>
           <TrackMenuProvider>
             <Shell
@@ -51,6 +55,8 @@ export default function Page() {
             />
           </TrackMenuProvider>
         </PlayerProvider>
+        </YoutubeProvider>
+        </SpotifyProvider>
       </ToastProvider>
     </DataProvider>
   );

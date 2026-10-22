@@ -2,13 +2,15 @@
 import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { MdKeyboardArrowDown } from 'react-icons/md';
+import { useData } from '@/components/data/DataProvider';
 import { usePlayer } from '@/components/player/PlayerProvider';
 import Controls from '@/components/player/Controls';
 import LyricsPanel from '@/components/lyrics/LyricsPanel';
 import Visualizer from '@/components/player/Visualizer';
 
 export default function NowPlaying({ onClose }) {
-  const { track } = usePlayer();
+  const { track, videoSlot } = usePlayer();
+  const lib = useData();
 
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -24,7 +26,7 @@ export default function NowPlaying({ onClose }) {
 
       <div className="np-body">
         <div className="np-left">
-          <motion.div key={track.id} className="np-art" initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ backgroundImage: track.artwork ? `url(${track.artwork})` : undefined }} />
+          <motion.div ref={videoSlot('nowplaying')} key={track.id} className="np-art" data-video={track.source === 'youtube' && lib.settings.ytVideo ? '' : undefined} initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ backgroundImage: track.artwork ? `url(${track.artwork})` : undefined }} />
           <h1>{track.title}</h1>
           <p>{track.artist}</p>
           <Visualizer height={64} />

@@ -16,8 +16,8 @@ function registerAppIpc() {
   });
 
   ipcMain.handle('config:reset', () => {
-    const { clientId, lowMemory, closeToTray: tray, genius } = readConfig();
-    writeConfig({ ...(clientId ? { clientId } : {}), ...(lowMemory === false ? { lowMemory: false } : {}), ...(tray === false ? { closeToTray: false } : {}), ...(genius ? { genius: true } : {}) });
+    const { clientId, lowMemory, closeToTray: tray, genius, beta, spotifyClientId, youtubeClientId, youtubeClientSecret } = readConfig();
+    writeConfig({ ...(clientId ? { clientId } : {}), ...(lowMemory === false ? { lowMemory: false } : {}), ...(tray === false ? { closeToTray: false } : {}), ...(genius ? { genius: true } : {}), ...(beta ? { beta: true } : {}), ...(spotifyClientId ? { spotifyClientId } : {}), ...(youtubeClientId ? { youtubeClientId } : {}), ...(youtubeClientSecret ? { youtubeClientSecret } : {}) });
   });
 
   ipcMain.handle('perf:get', () => ({ lowMemory: isLowMemory() }));
@@ -27,6 +27,8 @@ function registerAppIpc() {
     return { lowMemory: !!on };
   });
 
+  ipcMain.handle('beta:get', () => !!readConfig().beta);
+  ipcMain.handle('beta:set', (_event, on) => { writeConfig({ ...readConfig(), beta: !!on }); return !!on; });
   ipcMain.handle('genius:get', () => !!readConfig().genius);
   ipcMain.handle('genius:set', (_event, on) => { writeConfig({ ...readConfig(), genius: !!on }); return !!on; });
 

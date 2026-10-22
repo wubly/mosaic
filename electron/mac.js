@@ -15,6 +15,7 @@ function setupMac() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
     { role: 'editMenu' },
+    { role: 'viewMenu' },
     {
       label: 'Playback',
       submenu: [

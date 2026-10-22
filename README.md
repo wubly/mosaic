@@ -9,6 +9,7 @@ a desktop music player for soundcloud and your own files. electron + next.js, ma
 - playlists, plus import from spotify links
 - equalizer, sleep timer, mini player, discord rich presence
 - colors follow the album art
+- beta (settings > beta): spotify and youtube playback, artist and album pages, genius lyrics
 
 <table>
   <tr>
@@ -33,4 +34,5 @@ npm run dev
 
 ## more notes
 - dont bug report, jsut make pr :3
-- works on windows 10 and macOS (media keys need accessibility permission on mac) 
+- works on windows 10 and macOS
+- beta features (settings > beta): spotify, youtube, genius lyrics. spotify needs premium and your own client id, youtube needs your own google oauth client. spotify playback needs widevine, so mosaic ships on castlabs electron. to play spotify from source on mac sign it once: `python3 -m castlabs_evs.vmp sign-pkg node_modules/electron/dist` 

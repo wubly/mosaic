@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { MdClose, MdCheck, MdSearch, MdAutoAwesome } from 'react-icons/md';
 import { useToast } from '@/components/ui/Toast';
 import Switch from '@/components/ui/Switch';
+import { useSpotify } from '@/components/spotify/SpotifyProvider';
 
 export const KIND_LABEL = {
   word: 'Word synced',
@@ -24,6 +25,7 @@ export default function LyricsPicker({ track, current, onClose, onPicked }) {
   const [data, setData] = useState({ list: null, query: '' });
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(true);
+  const { beta } = useSpotify();
   const [genius, setGenius] = useState(false);
   useEffect(() => { window.mosaic.getGenius().then(setGenius); }, []);
 
@@ -80,13 +82,13 @@ export default function LyricsPicker({ track, current, onClose, onPicked }) {
         <div><KindBadge kind="plain" /><span>Plain text, no timing</span></div>
       </dl>
 
-      <label className="lyr-genius">
+      {beta && <label className="lyr-genius">
         <span>
           <b>Genius <span className="beta">beta</span></b>
           <em>{genius ? 'On. Used when LRCLIB has nothing; plain lyrics only.' : 'Scrape plain, unsynced lyrics from genius.com when LRCLIB has nothing. Can break if Genius changes its pages.'}</em>
         </span>
         <Switch on={genius} onChange={toggleGenius} />
-      </label>
+      </label>}
 
       <ul>
         {current?.origin === 'custom' && (

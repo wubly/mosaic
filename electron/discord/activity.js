@@ -12,7 +12,7 @@ function buildActivity(payload) {
     statusDisplayType: DISPLAY_STATE,
     details: clip(payload.title, 'Unknown track'),
     state: clip(payload.artist, 'Unknown artist'),
-    largeImageText: clip(payload.album || payload.title, 'Mosaic'),
+    largeImageText: clip(payload.album && payload.album.trim().toLowerCase() !== String(payload.title || '').trim().toLowerCase() ? payload.album : '', 'Mosaic'),
     instance: false,
   };
 
