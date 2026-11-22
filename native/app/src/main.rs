@@ -1,5 +1,10 @@
+mod args;
+#[cfg(feature = "debug-cli")]
+mod debug_cli;
+
 use iced::widget::{container, text};
 use iced::{window, Color, Element, Size, Task, Theme};
+use mosaic_core::storage::Dirs;
 
 const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
@@ -66,6 +71,20 @@ fn window_settings() -> window::Settings {
 }
 
 fn main() -> anyhow::Result<()> {
+    let args = args::Args::parse(std::env::args().skip(1));
+    if args.version {
+        println!("mosaic {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let dirs = match &args.data_dir {
+        Some(root) => Dirs::with_root(root),
+        None => Dirs::resolve()?,
+    };
+    #[cfg(feature = "debug-cli")]
+    if let Some(cmd) = &args.debug_cmd {
+        return debug_cli::run(dirs, cmd);
+    }
+    let _ = dirs;
     iced::daemon(App::boot, App::update, App::view)
         .title(App::title)
         .theme(App::theme)
