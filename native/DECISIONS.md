@@ -47,3 +47,10 @@ One line per decision: `Mn: decision`.
 - M9: File dialogs use rfd 0.18 (xdg-portal + wayland, no GTK); drops are batched over 80 ms so several files give one toast and one scan.
 - M9: The Spotify import dialog is a placeholder flag (`importing`) until M11; the "Import from Spotify" buttons set it.
 - M9: `--debug-view <view>` selects the initial view for screenshots.
+- M10: The word-fill lyrics are built from stock widgets (a dim label plus a bright copy in a `clip(true)` container of width `p × word_width`) instead of a custom `advanced::Widget`; word widths and wrapped line counts come from `iced::advanced` paragraph measurement (`text_measure.rs`) so the scroll target can be computed without layout feedback.
+- M10: Lyrics line emphasis uses an opacity spring (`lyr-pos`, 170/26) that interpolates 1 / 0.55 / 0.28 / 0.22 by distance; the 0.96 scale and the top/bottom fade mask are omitted. Auto-scroll runs a spring (`lyr-scroll`) and issues `scroll_to` only while it moves, so manual scrolling is free between lines.
+- M10: The Now Playing overlay reuses the ambient layer under a 62 % surface fill; the enter/exit slide is omitted. Mini mode resizes the same window to 380×660 (min 340×440, always-on-top), and back to the remembered size (min 980×640).
+- M10: The visualizer reads the analyser at ≤30 fps only while Now Playing is open and the music plays or bars are decaying.
+- M10: The 1 Hz player tick subscription runs only while something needs it (`PlayerController::wants_tick`), keeping idle CPU near zero.
+- M10: Debug builds redraw continuously at high CPU (software-heavy debug wgpu path); idle CPU is judged on the release build (≈1.4 % discover, before gating the tick).
+- M10: Not verified here: word-by-word fill against the Electron app on a word-stamped track, `.lrc` sidecar pickup in the UI, persistence of a chosen version across restarts, always-on-top on X11.

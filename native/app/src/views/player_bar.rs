@@ -301,6 +301,10 @@ impl App {
         .into()
     }
 
+    pub(crate) fn controls_view(&self, p: Palette) -> Element<'_, Message> {
+        self.controls(p, false)
+    }
+
     fn controls(&self, p: Palette, compact: bool) -> Element<'_, Message> {
         let s = self.settings();
         let pl = &self.player;

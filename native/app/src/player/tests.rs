@@ -1023,3 +1023,19 @@ fn media_controls_refresh_every_five_seconds_while_playing() {
     h.advance(4);
     assert!(media(&h.send(PlayerInput::Tick)));
 }
+
+#[test]
+fn tick_is_only_wanted_when_something_depends_on_it() {
+    let mut h = Harness::new();
+    assert!(!h.c.wants_tick());
+    h.start(&sc(1), &list(&[1]));
+    assert!(h.c.wants_tick());
+    let (deck, gen) = (h.c.active, h.c.gen);
+    h.send(PlayerInput::Engine(Event::Paused { deck, gen }));
+    assert!(h.c.wants_tick(), "a play record is still pending");
+    h.advance(25);
+    h.send(PlayerInput::Tick);
+    assert!(!h.c.wants_tick());
+    h.send(PlayerInput::SetSleep(SleepRequest::Minutes(5)));
+    assert!(h.c.wants_tick());
+}

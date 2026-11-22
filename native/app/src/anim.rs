@@ -219,6 +219,10 @@ impl AnimationClock {
         }
     }
 
+    pub fn is_spring_active(&self, key: &str) -> bool {
+        matches!(self.values.get(key), Some((_, Motion::Spring(s))) if !s.is_settled())
+    }
+
     pub fn is_active(&self, now: Instant) -> bool {
         self.values.values().any(|(_, m)| match m {
             Motion::Spring(s) => !s.is_settled(),

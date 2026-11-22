@@ -12,6 +12,7 @@ mod external;
 mod images;
 mod player;
 mod resolve;
+mod text_measure;
 mod theme;
 mod views;
 mod widgets;

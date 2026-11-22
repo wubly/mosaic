@@ -257,6 +257,14 @@ impl PlayerController {
         fx
     }
 
+    /// Whether the 1 Hz tick has anything to do (stats, sleep timer, debounced presence).
+    pub fn wants_tick(&self) -> bool {
+        self.playing
+            || self.record_due.is_some()
+            || self.seek_presence_at.is_some()
+            || matches!(self.sleep, Sleep::Timer { .. } | Sleep::Fading)
+    }
+
     /// Why this track can't be played here, if it can't.
     pub fn unavailable(&self, track: &Track) -> Option<&'static str> {
         match track.source {

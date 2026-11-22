@@ -530,7 +530,13 @@ mod tests {
             .collect();
         assert_eq!(
             headers,
-            [("Alpha", 1), ("alpha", 1), ("Alpha", 1), ("Beta", 1), (UNKNOWN, 1)]
+            [
+                ("Alpha", 1),
+                ("alpha", 1),
+                ("Alpha", 1),
+                ("Beta", 1),
+                (UNKNOWN, 1)
+            ]
         );
     }
 

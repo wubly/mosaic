@@ -2,6 +2,8 @@ pub mod common;
 pub mod discover;
 pub mod library;
 pub mod local;
+pub mod lyrics;
+pub mod now_playing;
 pub mod palette;
 pub mod player_bar;
 pub mod queue;

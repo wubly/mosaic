@@ -8,4 +8,5 @@ pub mod resizer;
 pub mod spinner;
 pub mod switch;
 pub mod toast;
+pub mod visualizer;
 pub mod wavy_slider;

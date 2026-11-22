@@ -51,6 +51,8 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 pub enum Message {
     Player(PlayerInput),
     Nop,
+    Lyrics(crate::views::lyrics::Msg),
+    CloseNowPlaying,
     Library(crate::views::library::Msg),
     Local(crate::views::local::Msg),
     Queue(crate::views::queue::Msg),
@@ -120,6 +122,7 @@ pub(crate) struct Ui {
     pub(crate) menu: Option<crate::views::track::MenuState>,
     pub(crate) palette: crate::views::palette::State,
     pub(crate) importing: bool,
+    pub(crate) lyrics: crate::views::lyrics::State,
     pub(crate) library: crate::views::library::State,
     pub(crate) local: crate::views::local::State,
     pub(crate) reorder: Option<crate::views::reorder::State>,
@@ -157,6 +160,10 @@ pub struct App {
     pub(crate) local: Vec<mosaic_core::model::Track>,
     pub(crate) recent: Vec<mosaic_core::model::Track>,
     pub(crate) cursor: Point,
+    pub(crate) analyser: Option<mosaic_audio::Analyser>,
+    pub(crate) viz: [f32; crate::widgets::visualizer::BARS],
+    pub(crate) viz_last: Instant,
+    pub(crate) normal_size: Size,
     pub(crate) now: Instant,
     pub(crate) pos_at: Instant,
     pub(crate) epoch: Instant,
@@ -178,6 +185,7 @@ impl App {
         let decorations = decorations_enabled();
         let now = Instant::now();
         let saver = Saver::new(&flags.dirs);
+        let analyser = flags.engine.as_ref().map(|e| e.analyser());
         let mut app = App {
             main,
             size: Size::new(1280.0, 820.0),
@@ -209,6 +217,10 @@ impl App {
             local: Vec::new(),
             recent: Vec::new(),
             cursor: Point::ORIGIN,
+            analyser,
+            viz: [0.0; crate::widgets::visualizer::BARS],
+            viz_last: now,
+            normal_size: Size::new(1280.0, 820.0),
             now,
             pos_at: now,
             epoch: now,
@@ -223,6 +235,9 @@ impl App {
                 "settings" => View::Settings,
                 _ => View::Discover,
             });
+            if v == "nowplaying" {
+                app.ui.now_playing = true;
+            }
             if v == "stats" {
                 app.ui.view = Some(View::Library);
                 app.ui.library.tab = crate::views::library::Tab::Stats;
@@ -235,6 +250,9 @@ impl App {
         tasks.push(app.run_effects(fx));
         if let Some(session) = app.store.session.clone() {
             tasks.push(app.player_input(PlayerInput::Restore(session)));
+        }
+        if flags.debug_view.as_deref() == Some("mini") {
+            tasks.push(app.toggle_mini());
         }
         if app.debug_screenshot.is_some() {
             tasks.push(
@@ -314,7 +332,7 @@ impl App {
             28.0,
         );
         if before != after {
-            return Task::batch([task, self.track_changed()]);
+            return Task::batch([task, self.track_changed(), self.fetch_lyrics()]);
         }
         task
     }
@@ -565,6 +583,11 @@ impl App {
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
             Message::Nop => Task::none(),
+            Message::Lyrics(msg) => self.on_lyrics(msg),
+            Message::CloseNowPlaying => {
+                self.ui.now_playing = false;
+                Task::none()
+            }
             Message::Library(msg) => self.on_library(msg),
             Message::Local(msg) => self.on_local(msg),
             Message::Queue(msg) => self.on_queue(msg),
@@ -631,7 +654,8 @@ impl App {
                 let (_, shown) =
                     crate::views::player_bar::shown_times(t.current, t.duration, t.offset, t.tail);
                 self.pos_at = self.now;
-                self.player_input(PlayerInput::Seek(f64::from(f) * shown + t.offset))
+                let seek = self.player_input(PlayerInput::Seek(f64::from(f) * shown + t.offset));
+                Task::batch([seek, self.lyrics_tick()])
             }
             Message::VolumeFraction(f) => {
                 let v = (f64::from(f) * 100.0).round() / 100.0;
@@ -642,10 +666,7 @@ impl App {
                 self.ui.now_playing = true;
                 Task::none()
             }
-            Message::ToggleMini => {
-                self.ui.mini = !self.ui.mini;
-                Task::none()
-            }
+            Message::ToggleMini => self.toggle_mini(),
             Message::ToggleLyrics => {
                 let open = self.settings().lyrics_open;
                 self.set_setting(|s| s.lyrics_open = !open)
@@ -676,8 +697,12 @@ impl App {
                 self.now = now;
                 self.anim.tick(now);
                 self.theme.tick(now);
+                self.viz_tick();
                 if self.ambient_prev.is_some() && self.anim.value("ambient", 1.0) >= 1.0 {
                     self.ambient_prev = None;
+                }
+                if self.settings().lyrics_open || self.ui.now_playing || self.ui.mini {
+                    return self.lyrics_tick();
                 }
                 Task::none()
             }
@@ -828,6 +853,9 @@ impl App {
             return Task::none();
         }
         if matches!(key.as_ref(), keyboard::Key::Named(Named::Escape)) {
+            if self.ui.lyrics.picker.take().is_some() {
+                return Task::none();
+            }
             self.ui.tune = None;
             self.ui.menu = None;
             self.ui.now_playing = false;
@@ -865,10 +893,7 @@ impl App {
                     let open = self.settings().lyrics_open;
                     return self.set_setting(|s| s.lyrics_open = !open);
                 }
-                "i" => {
-                    self.ui.mini = !self.ui.mini;
-                    return Task::none();
-                }
+                "i" => return self.toggle_mini(),
                 "f" => {
                     if self.player.track.is_some() {
                         self.ui.now_playing = !self.ui.now_playing;
@@ -930,8 +955,10 @@ impl App {
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             Subscription::run(external_events).map(Message::External),
             event::listen_with(key_events),
-            iced::time::every(Duration::from_secs(1)).map(Message::Tick),
         ];
+        if self.player.wants_tick() {
+            subs.push(iced::time::every(Duration::from_secs(1)).map(Message::Tick));
+        }
         if self.needs_frames() {
             subs.push(window::frames().map(Message::Frame));
         }
@@ -949,7 +976,15 @@ impl App {
 
     pub fn view(&self, _: window::Id) -> Element<'_, Message> {
         let p = self.palette();
-        let mut layers = stack![self.ambient_view(p), self.shell(p), self.titlebar(p)];
+        let mut layers = if self.ui.mini {
+            stack![self.mini_view(p), self.titlebar(p)]
+        } else {
+            let mut base = stack![self.ambient_view(p), self.shell(p)];
+            if self.ui.now_playing && self.player.track.is_some() {
+                base = base.push(self.now_playing_view(p));
+            }
+            base.push(self.titlebar(p))
+        };
         if !self.decorations && !self.maximized {
             layers = layers.push(self.edges());
         }
@@ -1000,7 +1035,7 @@ impl App {
         .into()
     }
 
-    fn ambient_view(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn ambient_view(&self, p: Palette) -> Element<'_, Message> {
         let fade = self.anim.value("ambient", 1.0);
         let layer = |l: &AmbientLayer, opacity: f32| {
             image(l.handle.clone())
@@ -1010,9 +1045,12 @@ impl App {
                 .opacity(opacity)
                 .scale(1.3_f32)
         };
-        let mut layers = stack![container(Space::new()).style(styles::surface(p))]
+        let mut layers = stack![container(Space::new())
             .width(Length::Fill)
-            .height(Length::Fill);
+            .height(Length::Fill)
+            .style(styles::surface(p))]
+        .width(Length::Fill)
+        .height(Length::Fill);
         if let Some(prev) = &self.ambient_prev {
             layers = layers.push(layer(prev, 1.0));
         }
@@ -1159,9 +1197,10 @@ impl App {
                     Message::ResizerReset(Axis::Vertical),
                 ))
                 .push(
-                    container(Space::new())
+                    container(self.lyrics_panel(p))
                         .width(side_w)
                         .height(Length::Fill)
+                        .clip(true)
                         .style(styles::glass(p)),
                 );
         }
