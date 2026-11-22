@@ -20,36 +20,12 @@ fn color(rgb: Rgb) -> Color {
     Color::from_rgb8(rgb.red, rgb.green, rgb.blue)
 }
 
-/// Port of `applyScheme`: the tones come straight from the JS.
-pub fn palette_from_seed(seed: Rgb) -> Palette {
-    scheme_from_seed(seed, false)
-}
-
-/// Material You's dark or light scheme for `seed`. The light one is used when the artwork
-/// behind the glass is bright, so text stays dark on it.
+/// Port of `applyScheme`: Material You's dark scheme for `seed` (the tones come straight from
+/// the JS). Always dark: a light scheme off bright artwork turned the whole window white.
 #[allow(deprecated)] // `CorePalette` is what `themeFromSourceColor` builds on
-pub fn scheme_from_seed(seed: Rgb, light: bool) -> Palette {
+pub fn palette_from_seed(seed: Rgb) -> Palette {
     let p = CorePalette::of(seed);
     let base = Palette::default();
-    if light {
-        return Palette {
-            primary: color(p.primary.tone(40)),
-            on_primary: color(p.primary.tone(100)),
-            primary_container: color(p.primary.tone(90)),
-            on_primary_container: color(p.primary.tone(10)),
-            surface: color(p.neutral.tone(98)),
-            on_surface: color(p.neutral.tone(10)),
-            on_surface_variant: color(p.neutral_variant.tone(30)),
-            surface_container: color(p.neutral.tone(94)),
-            surface_container_high: color(p.neutral.tone(92)),
-            surface_container_highest: color(p.neutral.tone(90)),
-            outline: color(p.neutral_variant.tone(50)),
-            outline_variant: color(p.neutral_variant.tone(80)),
-            error: Color::from_rgb8(0xb3, 0x26, 0x1e),
-            error_container: Color::from_rgb8(0xf9, 0xde, 0xdc),
-            on_error_container: Color::from_rgb8(0x41, 0x0e, 0x0b),
-        };
-    }
     Palette {
         primary: color(p.primary.tone(80)),
         on_primary: color(p.primary.tone(20)),
@@ -65,28 +41,6 @@ pub fn scheme_from_seed(seed: Rgb, light: bool) -> Palette {
         outline_variant: color(p.neutral_variant.tone(30)),
         ..base
     }
-}
-
-/// Whether an image reads as light: mean relative luminance above the midpoint.
-pub fn is_light(rgba: &[u8]) -> bool {
-    let lin = |c: u8| {
-        let c = f32::from(c) / 255.0;
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let px = rgba.as_chunks::<4>().0;
-    if px.is_empty() {
-        return false;
-    }
-    let sum: f32 = px
-        .iter()
-        .map(|p| 0.2126 * lin(p[0]) + 0.7152 * lin(p[1]) + 0.0722 * lin(p[2]))
-        .sum();
-    // 0.3 linear is roughly mid-grey (L* ≈ 60) to the eye.
-    sum / px.len() as f32 > 0.3
 }
 
 /// `sourceColorFromImage` on RGBA pixels (callers downscale to ≤128 px first).

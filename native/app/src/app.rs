@@ -115,8 +115,6 @@ pub enum Message {
         src: String,
         seed: Option<material_colors::color::Rgb>,
         ambient: Option<Arc<::image::RgbaImage>>,
-        /// The ambient backdrop is bright enough to need the light scheme.
-        light: bool,
     },
 }
 
@@ -566,21 +564,17 @@ impl App {
                         src,
                         seed: None,
                         ambient: None,
-                        light: false,
                     };
                 };
-                let (seed, ambient, light) = tokio::task::spawn_blocking(move || {
-                    let ambient = ambient::render(&art);
-                    let light = crate::theme::is_light(ambient.as_raw());
-                    (seed_from_rgba(art.as_raw()), ambient, light)
+                let (seed, ambient) = tokio::task::spawn_blocking(move || {
+                    (seed_from_rgba(art.as_raw()), ambient::render(&art))
                 })
                 .await
-                .unwrap_or((None, ::image::RgbaImage::new(1, 1), false));
+                .unwrap_or((None, ::image::RgbaImage::new(1, 1)));
                 Message::ThemeArt {
                     src,
                     seed,
                     ambient: Some(Arc::new(ambient)),
-                    light,
                 }
             },
             |m| m,
@@ -1102,16 +1096,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ThemeArt {
-                src,
-                seed,
-                ambient,
-                light,
-            } => {
+            Message::ThemeArt { src, seed, ambient } => {
                 if src != self.art_src && !self.is_debug_theme(&src) {
                     return Task::none();
                 }
-                let palette = crate::theme::scheme_from_seed(seed.unwrap_or(DEFAULT_SEED), light);
+                let palette = crate::theme::palette_from_seed(seed.unwrap_or(DEFAULT_SEED));
                 self.theme.remember(src, palette);
                 self.theme.transition_to(palette, self.now);
                 if let Some(img) = ambient {

@@ -9,6 +9,22 @@ const DRAWN: u32 = 60;
 const OFFSET: u32 = 6;
 const LARGE: u32 = 256;
 const SATURATION: f32 = 1.6;
+/// The brightest the backdrop may get (perceived luma, 0..255). Under the dark scheme's glass a
+/// bright cover (white, yellow) would otherwise light up the whole window.
+const MAX_LUMA: f32 = 96.0;
+
+/// Dims pixels brighter than `max` down to it, keeping their hue.
+fn cap_brightness(image: &mut RgbaImage, max: f32) {
+    for px in image.pixels_mut() {
+        let [r, g, b, a] = px.0;
+        let luma = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
+        if luma > max {
+            let k = max / luma;
+            let dim = |c: u8| (f32::from(c) * k).round() as u8;
+            px.0 = [dim(r), dim(g), dim(b), a];
+        }
+    }
+}
 
 fn saturate(image: &mut RgbaImage, s: f32) {
     for px in image.pixels_mut() {
@@ -40,6 +56,7 @@ pub fn render(art: &RgbaImage) -> RgbaImage {
     let mut small = image::imageops::crop_imm(&drawn, OFFSET, OFFSET, SMALL, SMALL).to_image();
     small = blur(&small, 3.0);
     saturate(&mut small, SATURATION);
+    cap_brightness(&mut small, MAX_LUMA);
     let large = resize(&small, LARGE, LARGE, FilterType::CatmullRom);
     blur(&large, 12.0)
 }
@@ -59,6 +76,15 @@ mod tests {
             px[0] >= 200,
             "saturation boosts the dominant channel: {px:?}"
         );
+    }
+
+    #[test]
+    fn bright_artwork_is_dimmed_but_keeps_its_hue() {
+        let art = RgbaImage::from_pixel(200, 200, image::Rgba([240, 200, 40, 255]));
+        let px = render(&art).get_pixel(128, 128).0;
+        let luma = 0.299 * f32::from(px[0]) + 0.587 * f32::from(px[1]) + 0.114 * f32::from(px[2]);
+        assert!(luma <= MAX_LUMA + 2.0, "dimmed: {px:?}");
+        assert!(px[0] > px[2] && px[1] > px[2], "still yellow: {px:?}");
     }
 
     #[test]
