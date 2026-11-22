@@ -68,6 +68,7 @@ impl Spring {
             self.velocity = 0.0;
             return;
         }
+        let before = self.value;
         let mut left = dt.as_secs_f32().min(0.1);
         while left > 0.0 {
             let h = left.min(SUBSTEP);
@@ -76,7 +77,11 @@ impl Spring {
             self.value += self.velocity * h;
             left -= h;
         }
-        if self.is_settled() {
+        // Far from zero (a scroll offset in the thousands) the last sliver of motion is smaller
+        // than f32 can add, so the value stops changing a hair short of the target with a crawl
+        // of velocity left. It would never count as settled and keep the frames running.
+        let stalled = self.value == before && (self.value - self.target).abs() < 0.01;
+        if stalled || self.is_settled() {
             self.value = self.target;
             self.velocity = 0.0;
         }
@@ -300,6 +305,29 @@ mod tests {
         s.step(Duration::from_secs(1));
         assert_eq!(s.value, 5.0);
         assert!(s.is_settled());
+    }
+
+    #[test]
+    fn spring_far_from_zero_settles_despite_float_precision() {
+        // The stuck state seen on the lyrics scroll spring: each substep moves the value by less
+        // than f32 can represent at 1650, so it never reached the target or slowed further.
+        let mut s = Spring {
+            value: 1650.106,
+            velocity: 0.010_375_979,
+            target: 1650.1077,
+            stiffness: 170.0,
+            damping: 28.0,
+        };
+        s.step(Duration::from_millis(3));
+        assert!(s.is_settled(), "{s:?}");
+        assert_eq!(s.value, 1650.1077);
+
+        let mut s = Spring::new(0.0, 170.0, 28.0);
+        s.set_target(1650.1077);
+        for _ in 0..2000 {
+            s.step(Duration::from_micros(2_778));
+        }
+        assert!(s.is_settled(), "{s:?}");
     }
 
     #[test]
