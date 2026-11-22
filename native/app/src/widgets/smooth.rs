@@ -378,7 +378,8 @@ impl<Message> Smooth<'_, Message> {
             state.target = None;
             state.last = None;
         } else {
-            shell.request_redraw();
+            // At the app's frame rate, not every vsync (see `app::FRAME`).
+            shell.request_redraw_at(now + crate::app::FRAME);
         }
         state.current = current;
         let _ = self.run(tree, layout, renderer, Some(current));

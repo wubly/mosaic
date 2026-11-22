@@ -35,8 +35,9 @@ const MAC_INSET: f32 = 92.0;
 /// Fade-through timings: the old page fades out quickly, the new one eases in.
 const PAGE_OUT_MS: u64 = 90;
 const PAGE_IN_MS: u64 = 320;
-/// Frame interval for playback-long motion (about 60 fps).
-const PLAYBACK_FRAME: Duration = Duration::from_micros(16_667);
+/// Animation frame interval (about 60 fps). Not the display's rate: every frame rebuilds and
+/// redraws the whole window, so on a 360 Hz monitor a fade or spring cost 12 % of a core.
+pub const FRAME: Duration = Duration::from_micros(16_667);
 
 pub struct Flags {
     pub dirs: Dirs,
@@ -1276,21 +1277,15 @@ impl App {
         }
     }
 
-    /// Short-lived animations (springs, page and theme transitions, fades) that run at the
-    /// display's refresh rate.
+    /// Something is moving: springs, page and theme transitions, fades, or motion that lasts as
+    /// long as the music (wave scroll, smoothed seek position, lyric fill, visualizer).
     fn needs_frames(&self) -> bool {
         self.theme.is_animating()
             || self.ui.nav.is_some()
             || self.anim.is_active(self.now)
             || !self.toasts.is_empty()
             || self.images.is_fading(self.now)
-    }
-
-    /// Motion that lasts as long as the music (wave scroll, smoothed seek position, lyric fill,
-    /// visualizer). It is capped at [`PLAYBACK_FRAME`]: at the display's rate a 360 Hz monitor
-    /// rebuilds and redraws the whole window 360 times a second for a moving seek bar.
-    fn needs_playback_frames(&self) -> bool {
-        self.viz_active()
+            || self.viz_active()
             || (self.player.track.is_some() && (self.player.playing || self.player.loading))
     }
 
@@ -1305,9 +1300,7 @@ impl App {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
         if self.needs_frames() {
-            subs.push(window::frames().map(Message::Frame));
-        } else if self.needs_playback_frames() {
-            subs.push(iced::time::every(PLAYBACK_FRAME).map(Message::Frame));
+            subs.push(iced::time::every(FRAME).map(Message::Frame));
         }
         if self.drag.is_some() || self.ui.reorder.is_some() {
             subs.push(event::listen_with(drag_events));
