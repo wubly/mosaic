@@ -42,4 +42,3 @@ category = "Music"
 
 [package.metadata.packager.deb]
 depends = ["libasound2"]
-desktop-template = "../packaging/linux/app.mosaic.player.desktop"
