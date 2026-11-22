@@ -72,6 +72,7 @@ fn main() -> anyhow::Result<()> {
             media,
             debug_theme: args.debug_theme,
             debug_screenshot: args.debug_screenshot,
+            debug_view: args.debug_view,
         });
     }
     iced::daemon(App::boot, App::update, App::view)

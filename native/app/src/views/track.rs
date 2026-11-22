@@ -86,7 +86,7 @@ impl App {
             ListRef::Queue => self.player.queue.list.clone(),
             ListRef::Likes => self.store.likes.clone(),
             ListRef::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
-            ListRef::Local => self.local.clone(),
+            ListRef::Local => self.ui.local.tracks.clone(),
             ListRef::Playlist(id) => self
                 .store
                 .playlists
@@ -328,7 +328,7 @@ impl App {
         .padding([0, 4])
         .style(move |_, status| button::Style {
             background: match (active, status) {
-                (true, _) => Some(mix(p.primary, iced::Color::TRANSPARENT, 0.16).into()),
+                (true, _) => None,
                 (_, button::Status::Hovered | button::Status::Pressed) => {
                     Some(mix(p.on_surface, iced::Color::TRANSPARENT, 0.08).into())
                 }
@@ -376,6 +376,13 @@ impl App {
         ]
         .spacing(4)
         .align_y(Alignment::Center);
+        let line = container(line)
+            .padding([0, 8])
+            .style(move |_| container::Style {
+                background: active.then(|| mix(p.primary, iced::Color::TRANSPARENT, 0.16).into()),
+                border: iced::border::rounded(14),
+                ..container::Style::default()
+            });
         let line: Element<'a, Message> = mouse_area(line)
             .on_right_press(Message::Track(Msg::OpenMenu(r)))
             .into();
@@ -386,7 +393,7 @@ impl App {
     }
 
     /// The three equaliser bars (`Bars.js`); they move only while playing.
-    fn bars(&self, playing: bool, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn bars(&self, playing: bool, p: Palette) -> Element<'_, Message> {
         let t = self.now.saturating_duration_since(self.epoch).as_secs_f32();
         let base = [7.0, 12.0, 5.0];
         let bars = (0..3).map(|i| {

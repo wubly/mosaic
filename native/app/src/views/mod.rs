@@ -1,6 +1,11 @@
+pub mod common;
 pub mod discover;
+pub mod library;
+pub mod local;
 pub mod palette;
 pub mod player_bar;
+pub mod queue;
+pub mod reorder;
 pub mod track;
 pub mod tune;
 
@@ -13,11 +18,16 @@ use crate::widgets::icon::{icon, Icon};
 impl App {
     /// Artwork at `size` logical pixels: the cached image, or a gradient placeholder.
     pub(crate) fn art(&self, src: &str, size: f32, radius: f32) -> Element<'_, Message> {
+        self.art_sized(src, size, size, radius)
+    }
+
+    pub(crate) fn art_sized(&self, src: &str, w: f32, h: f32, radius: f32) -> Element<'_, Message> {
         let p = self.palette();
+        let size = w.max(h);
         match self.images.art(src, (size * 2.0).ceil() as u32, self.now) {
             Some((handle, opacity)) => image(handle)
-                .width(size)
-                .height(size)
+                .width(w)
+                .height(h)
                 .content_fit(ContentFit::Cover)
                 .border_radius(radius)
                 .opacity(opacity)
@@ -29,7 +39,8 @@ impl App {
             } else {
                 Space::new().into()
             })
-            .center(Length::Fixed(size))
+            .center_x(Length::Fixed(w))
+            .center_y(Length::Fixed(h))
             .style(move |_| container::Style {
                 background: Some(iced::Background::Gradient(
                     iced::gradient::Linear::new(std::f32::consts::FRAC_PI_4 * 3.0)

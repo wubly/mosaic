@@ -40,3 +40,10 @@ One line per decision: `Mn: decision`.
 - M8: Skeletons are static blocks (no shimmer); search-bar focus animation and the tile hover lift/entrance animation are omitted. Tiles use a wrapping row (fixed 156/148 px) rather than a stretching CSS grid.
 - M8: Spotify and YouTube sections of Discover are omitted (YouTube dropped; Spotify arrives in M11). Device hits and the palette's track search use the scanner results held in `App::local`.
 - M8: Palette keyboard handling: Up/Down/Esc in the global key handler, Enter via the text input's submit.
+- M9: Virtual list = scrollable with `on_scroll` offset + two spacers around the visible rows (fixed 54 px rows, 8 rows overscan); each page passes an estimated list-top offset, the overscan absorbs the error. Verified by unit tests only; the 20k-row 60 fps check was not run.
+- M9: Drag reorder uses a grip: press, then the row follows the cursor in whole-row steps (delta from the press point), previewing the new order, and the list is committed on release. The spec's 150 ms press-and-hold is not used (the grip makes it unnecessary).
+- M9: Local sorting uses an NFKD/accent/case-insensitive key (no numeric-aware compare); group headers compare the exact artist/folder string like the JS.
+- M9: Stats bars animate with the 140/20 spring from 0 on tab entry; the history "when" label is drawn over the row at right:150.
+- M9: File dialogs use rfd 0.18 (xdg-portal + wayland, no GTK); drops are batched over 80 ms so several files give one toast and one scan.
+- M9: The Spotify import dialog is a placeholder flag (`importing`) until M11; the "Import from Spotify" buttons set it.
+- M9: `--debug-view <view>` selects the initial view for screenshots.

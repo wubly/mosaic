@@ -164,6 +164,17 @@ impl AnimationClock {
             .insert(key, (spring.value, Motion::Spring(spring)));
     }
 
+    /// Jumps a spring to `value` with no motion (the next `spring` call animates from there).
+    pub fn reset(&mut self, key: &'static str, value: f32, stiffness: f32, damping: f32) {
+        self.values.insert(
+            key,
+            (
+                value,
+                Motion::Spring(Spring::new(value, stiffness, damping)),
+            ),
+        );
+    }
+
     pub fn tween(
         &mut self,
         key: &'static str,

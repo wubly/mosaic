@@ -41,6 +41,7 @@ pub struct Flags {
     pub media: Option<mosaic_platform::media_controls::Media>,
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<std::path::PathBuf>,
+    pub debug_view: Option<String>,
 }
 
 pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
@@ -50,6 +51,15 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 pub enum Message {
     Player(PlayerInput),
     Nop,
+    Library(crate::views::library::Msg),
+    Local(crate::views::local::Msg),
+    Queue(crate::views::queue::Msg),
+    Reorder(crate::views::reorder::Msg),
+    Scrolled(f32, f32),
+    OpenImport,
+    FileHovered(bool),
+    FileDropped(std::path::PathBuf),
+    DropFlush(u64),
     Track(crate::views::track::Msg),
     Discover(crate::views::discover::Msg),
     Palette(crate::views::palette::Msg),
@@ -110,6 +120,13 @@ pub(crate) struct Ui {
     pub(crate) menu: Option<crate::views::track::MenuState>,
     pub(crate) palette: crate::views::palette::State,
     pub(crate) importing: bool,
+    pub(crate) library: crate::views::library::State,
+    pub(crate) local: crate::views::local::State,
+    pub(crate) reorder: Option<crate::views::reorder::State>,
+    pub(crate) scroll: (f32, f32),
+    pub(crate) dropped: Vec<std::path::PathBuf>,
+    pub(crate) drop_hover: bool,
+    pub(crate) drop_seq: u64,
 }
 
 pub struct App {
@@ -197,6 +214,20 @@ impl App {
             epoch: now,
             debug_screenshot: flags.debug_screenshot,
         };
+        if let Some(v) = &flags.debug_view {
+            app.ui.view = Some(match v.as_str() {
+                "library" => View::Library,
+                "playlists" => View::Playlists,
+                "local" => View::Local,
+                "queue" => View::Queue,
+                "settings" => View::Settings,
+                _ => View::Discover,
+            });
+            if v == "stats" {
+                app.ui.view = Some(View::Library);
+                app.ui.library.tab = crate::views::library::Tab::Stats;
+            }
+        }
         app.retarget_rail();
         app.refresh_recent();
         let mut tasks = vec![open.discard(), app.discover_boot(), app.scan()];
@@ -534,16 +565,64 @@ impl App {
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
             Message::Nop => Task::none(),
+            Message::Library(msg) => self.on_library(msg),
+            Message::Local(msg) => self.on_local(msg),
+            Message::Queue(msg) => self.on_queue(msg),
+            Message::Reorder(msg) => {
+                self.on_reorder(msg);
+                Task::none()
+            }
+            Message::Scrolled(y, h) => {
+                self.ui.scroll = (y, h);
+                Task::none()
+            }
+            Message::OpenImport => {
+                self.ui.importing = true;
+                Task::none()
+            }
+            Message::FileHovered(on) => {
+                self.ui.drop_hover = on;
+                Task::none()
+            }
+            Message::FileDropped(path) => {
+                self.ui.drop_hover = false;
+                self.ui.dropped.push(path);
+                self.ui.drop_seq += 1;
+                let seq = self.ui.drop_seq;
+                Task::perform(tokio::time::sleep(Duration::from_millis(80)), move |()| {
+                    Message::DropFlush(seq)
+                })
+            }
+            Message::DropFlush(seq) => {
+                if seq != self.ui.drop_seq || self.ui.dropped.is_empty() {
+                    return Task::none();
+                }
+                let paths: Vec<String> = std::mem::take(&mut self.ui.dropped)
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                let n = paths.len();
+                self.ui.view = Some(View::Local);
+                self.retarget_rail();
+                self.toast(format!(
+                    "Adding {n} item{} to your library",
+                    if n > 1 { "s" } else { "" }
+                ));
+                self.add_sources(paths)
+            }
             Message::Track(msg) => self.on_track(msg),
             Message::Discover(msg) => self.on_discover(msg),
             Message::Palette(msg) => self.on_palette(msg),
             Message::Cursor(p) => {
                 self.cursor = p;
+                self.reorder_moved();
                 Task::none()
             }
             Message::Scanned(result) => {
+                self.ui.local.scanning = false;
                 if let Ok(tracks) = result {
                     self.local = tracks;
+                    self.rebuild_local();
                 }
                 Task::none()
             }
@@ -574,6 +653,10 @@ impl App {
             Message::Tune(msg) => self.on_tune(msg),
             Message::Nav(view) => {
                 self.ui.view = Some(view);
+                self.ui.scroll.0 = 0.0;
+                if view == View::Library {
+                    self.ui.library.open = None;
+                }
                 self.retarget_rail();
                 Task::none()
             }
@@ -655,7 +738,7 @@ impl App {
                 if self.drag.take().is_some() {
                     self.touch();
                 }
-                Task::none()
+                self.reorder_finish()
             }
             Message::ResizerReset(axis) => {
                 match axis {
@@ -852,7 +935,7 @@ impl App {
         if self.needs_frames() {
             subs.push(window::frames().map(Message::Frame));
         }
-        if self.drag.is_some() {
+        if self.drag.is_some() || self.ui.reorder.is_some() {
             subs.push(event::listen_with(drag_events));
         }
         if self.images.has_wanted() {
@@ -875,6 +958,9 @@ impl App {
             .iter()
             .map(|t| (t.id, t.message.clone()))
             .collect();
+        if self.ui.drop_hover {
+            layers = layers.push(self.drop_veil(p));
+        }
         if let Some(menu) = &self.ui.menu {
             layers = layers.push(self.track_menu(menu, p));
         }
@@ -890,6 +976,28 @@ impl App {
             .height(Length::Fill)
             .style(styles::surface(p))
             .into()
+    }
+
+    fn drop_veil(&self, p: Palette) -> Element<'_, Message> {
+        container(
+            column![
+                icon(Icon::UploadFile, 56.0).color(p.on_primary_container),
+                text("Drop to add to Mosaic")
+                    .size(26)
+                    .color(p.on_primary_container),
+                text("Music files and folders are added to your library")
+                    .size(14)
+                    .color(p.on_primary_container),
+            ]
+            .spacing(8)
+            .align_x(iced::Alignment::Center),
+        )
+        .center(Length::Fill)
+        .style(styles::fill(
+            crate::theme::alpha(p.primary_container, 0.88),
+            0.0,
+        ))
+        .into()
     }
 
     fn ambient_view(&self, p: Palette) -> Element<'_, Message> {
@@ -1028,6 +1136,9 @@ impl App {
         );
         let content: Element<'_, Message> = match current {
             View::Discover => self.discover_view(p),
+            View::Library | View::Playlists => self.library_view(p),
+            View::Local => self.local_view(p),
+            View::Queue => self.queue_view(p),
             other => container(text(other.label()).size(28).color(p.on_surface))
                 .padding([32, 40])
                 .into(),
