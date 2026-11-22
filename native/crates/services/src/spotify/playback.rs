@@ -143,13 +143,22 @@ impl SpotifyPlayback {
         }
     }
 
-    /// Soloist's own up-next URIs (asks for a fresh list as a side effect); empty for librespot.
-    pub fn queue(&self) -> Vec<String> {
+    /// Soloist's own up-next tracks and the track Soloist is on (whose up-next it is); empty for
+    /// librespot.
+    pub fn queue(&self) -> (Option<String>, Vec<mosaic_core::model::Track>) {
         match self {
-            Self::Librespot(_) => Vec::new(),
+            Self::Librespot(_) => (None, Vec::new()),
+            Self::Soloist(s) => s.queue(),
+        }
+    }
+
+    /// Asks Spotify to skip to its own next track; returns false where that isn't possible.
+    pub fn skip_next(&self) -> bool {
+        match self {
+            Self::Librespot(_) => false,
             Self::Soloist(s) => {
-                s.request_queue();
-                s.queue()
+                s.skip_next();
+                true
             }
         }
     }

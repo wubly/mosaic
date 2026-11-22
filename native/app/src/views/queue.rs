@@ -117,7 +117,9 @@ impl App {
             );
         }
         let spotify = &self.ui.spotify.queue.1;
-        if self.playing_spotify() && !spotify.is_empty() {
+        // Once Spotify's list has been copied into the queue above, don't show it twice.
+        let shown_above = spotify.iter().all(|t| q.list.iter().any(|x| x.id == t.id));
+        if self.playing_spotify() && !spotify.is_empty() && !shown_above {
             body = body
                 .push(
                     container(

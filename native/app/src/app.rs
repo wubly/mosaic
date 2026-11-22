@@ -630,6 +630,17 @@ impl App {
                         },
                     ));
                 }
+                Effect::SpotifySkip => {
+                    let services = self.services.clone();
+                    tasks.push(
+                        Task::future(async move {
+                            if let Some(pb) = services.spotify_playback_current().await {
+                                pb.skip_next();
+                            }
+                        })
+                        .discard(),
+                    );
+                }
                 Effect::Toast(message) => self.toast(message),
                 Effect::RecordPlay(track) => {
                     self.store
@@ -1306,9 +1317,10 @@ impl App {
         if !self.toasts.is_empty() {
             subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::ToastTick));
         }
-        if self.view_kind() == View::Queue && self.playing_spotify() {
+        if self.playing_spotify() {
+            // Cheap: it reads what Soloist last announced, so the queue keeps up with Spotify.
             subs.push(
-                iced::time::every(Duration::from_secs(4))
+                iced::time::every(Duration::from_secs(1))
                     .map(|_| Message::Spotify(crate::views::spotify::Msg::PollQueue)),
             );
         }

@@ -83,7 +83,7 @@ pub enum Msg {
     Created(Result<PlaylistCard, String>),
     /// Refresh Soloist's up-next list.
     PollQueue,
-    Queue(Vec<String>, Vec<Track>),
+    Queue(Option<String>, Vec<Track>),
     /// Soloist moved on from `from` to `to` by itself.
     Moved {
         from: String,
@@ -109,7 +109,8 @@ pub struct State {
     /// The user's own and collaborative playlists, for "Add to playlist".
     pub editable: Vec<PlaylistCard>,
     /// Soloist's up-next URIs and the tracks they resolved to.
-    pub queue: (Vec<String>, Vec<Track>),
+    /// Soloist's up-next tracks, and the track URI they follow.
+    pub queue: (Option<String>, Vec<Track>),
 }
 
 impl Default for State {
@@ -127,7 +128,7 @@ impl Default for State {
             soloist_path: String::new(),
             soloist_key: String::new(),
             editable: Vec::new(),
-            queue: (Vec::new(), Vec::new()),
+            queue: (None, Vec::new()),
         }
     }
 }
@@ -586,24 +587,52 @@ impl App {
                     return Task::none();
                 }
                 let services = self.services.clone();
-                let known = self.ui.spotify.queue.0.clone();
+                let (known_for, known) = &self.ui.spotify.queue;
+                let known_for = known_for.clone();
+                let known: Vec<_> = known.iter().map(|t| t.id.clone()).collect();
                 Task::future(async move {
                     // Only an existing backend: never start Soloist just to read a queue.
                     let pb = services.spotify_playback_current().await?;
-                    let uris = pb.queue();
-                    if uris == known {
+                    let (playing, mut tracks) = pb.queue();
+                    let ids: Vec<_> = tracks.iter().map(|t| t.id.clone()).collect();
+                    if playing == known_for && ids == known {
                         return None;
                     }
-                    let tracks = services.spotify_tracks(&uris[..uris.len().min(20)]).await;
-                    Some(Message::Spotify(Msg::Queue(uris, tracks)))
+                    // Soloist's events carry names and covers; look up only what lacks them.
+                    let missing: Vec<String> = tracks
+                        .iter()
+                        .filter(|t| t.title.is_empty())
+                        .filter_map(|t| t.uri.clone())
+                        .collect();
+                    if !missing.is_empty() {
+                        let found = services.spotify_tracks(&missing).await;
+                        for t in &mut tracks {
+                            if let Some(f) = found.iter().find(|f| f.uri == t.uri) {
+                                *t = f.clone();
+                            }
+                        }
+                        tracks.retain(|t| !t.title.is_empty());
+                    }
+                    Some(Message::Spotify(Msg::Queue(playing, tracks)))
                 })
                 .and_then(Task::done)
             }
-            Msg::Queue(uris, tracks) => {
-                self.ui.spotify.queue = (uris, tracks);
-                Task::none()
+            Msg::Queue(playing, tracks) => {
+                self.ui.spotify.queue = (playing.clone(), tracks.clone());
+                self.player_input(crate::player::PlayerInput::SpotifyUpNext { playing, tracks })
             }
             Msg::Moved { from, to } => {
+                // Usually it's the head of Spotify's up-next list, already known.
+                let known = self
+                    .ui
+                    .spotify
+                    .queue
+                    .1
+                    .iter()
+                    .find(|t| t.uri.as_deref() == Some(&to));
+                if let Some(t) = known {
+                    return self.on_spotify(Msg::Adopt(from, Some(Box::new(t.clone()))));
+                }
                 let services = self.services.clone();
                 Task::perform(
                     async move {

@@ -1082,3 +1082,55 @@ fn spotify_moving_on_is_ignored_when_mosaic_has_a_next_track() {
     assert!(resolves(&fx).is_empty());
     assert_eq!(h.c.queue.list.len(), 2);
 }
+
+fn up_next(playing: &str, ids: &[u64]) -> PlayerInput {
+    PlayerInput::SpotifyUpNext {
+        playing: Some(playing.into()),
+        tracks: ids.iter().map(|&i| spotify(i)).collect(),
+    }
+}
+
+fn queue_ids(h: &Harness) -> Vec<String> {
+    h.c.queue.list.iter().map(|t| t.title.clone()).collect()
+}
+
+#[test]
+fn spotifys_up_next_fills_an_empty_queue_and_skipping_forward_plays_it() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    h.send(up_next("spotify:track:1", &[2, 3]));
+    assert_eq!(queue_ids(&h), ["song 1", "song 2", "song 3"]);
+    let fx = h.send(PlayerInput::Next);
+    assert_eq!(resolves(&fx), [2]);
+}
+
+#[test]
+fn spotifys_up_next_follows_spotify_but_never_replaces_tracks_queued_here() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    h.send(up_next("spotify:track:1", &[2, 3]));
+    // A list for another track (Spotify already moved on) is not ours to apply.
+    h.send(up_next("spotify:track:2", &[9]));
+    assert_eq!(queue_ids(&h), ["song 1", "song 2", "song 3"]);
+    // Spotify's list changed: the copied tail follows it.
+    h.send(up_next("spotify:track:1", &[4, 5]));
+    assert_eq!(queue_ids(&h), ["song 1", "song 4", "song 5"]);
+    // Something queued here stops the copying.
+    h.send(PlayerInput::AddToQueue(sc(7)));
+    h.send(up_next("spotify:track:1", &[6]));
+    assert_eq!(queue_ids(&h), ["song 1", "song 4", "song 5", "song 7"]);
+}
+
+#[test]
+fn skipping_forward_with_nothing_next_asks_spotify() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    let fx = h.send(PlayerInput::Next);
+    assert!(fx.iter().any(|e| matches!(e, Effect::SpotifySkip)));
+}

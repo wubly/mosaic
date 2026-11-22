@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::playback::Target;
 use crate::Services;
+use mosaic_core::model::Track;
 use mosaic_core::storage::{read_json, write_json_atomic};
 
 const SETTINGS_FILE: &str = "soloist.json";
@@ -37,6 +38,8 @@ const EXPIRED: &str = "Your Spotify Soloist build has expired (they last 90 days
 const STOPPED: &str = "Spotify Soloist stopped unexpectedly";
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often the up-next list is asked for again, on top of Soloist's own announcements.
+const QUEUE_REFRESH: Duration = Duration::from_secs(5);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Interleaved stereo f32 at the push source's 44.1 kHz: about 46 ms per chunk.
 const CHUNK_FRAMES: usize = 2048;
@@ -186,13 +189,21 @@ fn event_uri(ev: &Value) -> Option<String> {
 }
 
 /// Upcoming track URIs from a `queue_changed` message, in order.
+#[cfg(test)]
 fn queue_uris(ev: &Value) -> Vec<String> {
-    fn walk(v: &Value, out: &mut Vec<String>) {
+    queue_tracks(ev).into_iter().filter_map(|t| t.uri).collect()
+}
+
+/// Upcoming tracks from a `queue_changed` message, in order, built from the metadata Soloist
+/// sends along (title, artists, album, cover, length) so showing them needs no Web API calls.
+/// A track without a name in it comes back with an empty title.
+fn queue_tracks(ev: &Value) -> Vec<Track> {
+    fn walk(v: &Value, out: &mut Vec<Track>) {
         match v {
             Value::Object(map) => {
                 if let Some(uri) = map.get("uri").and_then(Value::as_str) {
                     if uri.starts_with("spotify:track:") {
-                        out.push(uri.to_string());
+                        out.push(track_from_item(v, uri));
                         return;
                     }
                 }
@@ -201,7 +212,9 @@ fn queue_uris(ev: &Value) -> Vec<String> {
                 }
             }
             Value::Array(list) => list.iter().for_each(|v| walk(v, out)),
-            Value::String(s) if s.starts_with("spotify:track:") => out.push(s.clone()),
+            Value::String(s) if s.starts_with("spotify:track:") => {
+                out.push(track_from_item(&Value::Null, s));
+            }
             _ => {}
         }
     }
@@ -216,6 +229,53 @@ fn queue_uris(ev: &Value) -> Vec<String> {
     let mut out = Vec::new();
     walk(list, &mut out);
     out
+}
+
+/// A Spotify track from one of Soloist's entity objects (`uri` plus `decorations`).
+fn track_from_item(item: &Value, uri: &str) -> Track {
+    let deco = &item["decorations"];
+    let name = |v: &Value| {
+        v["identity"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let artists: Vec<String> = deco["creators"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| name(&c["entity"]["decorations"]))
+        .filter(|n| !n.is_empty())
+        .collect();
+    let cover = |sizes: &[&str]| {
+        let list = deco["visual_identity"]["cover"].as_array();
+        sizes
+            .iter()
+            .find_map(|size| {
+                list.into_iter()
+                    .flatten()
+                    .find(|c| c["size"].as_str() == Some(size))
+                    .and_then(|c| c["url"].as_str())
+            })
+            .unwrap_or_default()
+            .to_string()
+    };
+    let id = uri.rsplit(':').next().unwrap_or_default();
+    let v = json!({
+        "id": format!("sp:{id}"),
+        "source": "spotify",
+        "uri": uri,
+        "title": name(deco),
+        "artist": if artists.is_empty() { "Unknown".to_string() } else { artists.join(", ") },
+        "album": name(&deco["parent"]["entity"]["decorations"]),
+        "artwork": cover(&["xlarge", "large", "default"]),
+        "thumb": cover(&["default", "large", "small"]),
+        "duration": deco["playback"]["duration_ms"].as_u64()
+            .or_else(|| item["playback"]["duration_ms"].as_u64())
+            .unwrap_or(0),
+        "permalink": format!("https://open.spotify.com/track/{id}"),
+    });
+    serde_json::from_value(v).unwrap_or_else(|_| unreachable!("a valid track"))
 }
 
 /// `Target::moved`: tells Mosaic which track Soloist moved on to.
@@ -239,8 +299,10 @@ struct Tracker {
     fed: f64,
     /// The volume Mosaic last set (0..=100).
     volume: Option<u8>,
-    /// Soloist's own up-next list (track URIs), from the last `queue_changed`.
-    queue: Vec<String>,
+    /// Soloist's own up-next list, from the last `queue_changed`.
+    queue: Vec<Track>,
+    /// When the up-next list was last asked for.
+    queue_asked: Option<Instant>,
     /// After our track finished without Soloist naming a successor yet (it went idle or was
     /// still between tracks): the finished URI and whom to tell once another track plays.
     follow: Option<(String, MovedFn)>,
@@ -267,6 +329,7 @@ impl Default for Tracker {
             fed: 0.0,
             volume: None,
             queue: Vec::new(),
+            queue_asked: None,
             follow: None,
         }
     }
@@ -344,7 +407,7 @@ impl Tracker {
                 }
             }
             "queue_changed" => {
-                self.queue = queue_uris(ev);
+                self.queue = queue_tracks(ev);
                 return Action::None;
             }
             "playback_changed" => {
@@ -592,14 +655,28 @@ impl Soloist {
 
     /// Asks for Soloist's up-next list; it arrives as `queue_changed` (see `queue`).
     pub fn request_queue(&self) {
+        self.with(|t| t.queue_asked = Some(Instant::now()));
         let mut cmd = command("get_queue");
         cmd["limit"] = json!(30);
         self.send(cmd);
     }
 
-    /// Soloist's own up-next track URIs as last reported.
-    pub fn queue(&self) -> Vec<String> {
-        self.with(|t| t.queue.clone()).unwrap_or_default()
+    /// Soloist's up-next list as last reported, and the track it's on. Soloist announces changes
+    /// by itself; this also asks again every few seconds in case one was missed.
+    pub fn queue(&self) -> (Option<String>, Vec<Track>) {
+        let stale = self
+            .with(|t| t.queue_asked.is_none_or(|at| at.elapsed() >= QUEUE_REFRESH))
+            .unwrap_or(false);
+        if stale {
+            self.request_queue();
+        }
+        self.with(|t| (t.uri.clone(), t.queue.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Skips to Soloist's own next track (its queue or autoplay).
+    pub fn skip_next(&self) {
+        self.send(command("skip_next"));
     }
 
     pub fn resume(&self) {
@@ -1074,6 +1151,32 @@ mod tests {
             { "uri": "spotify:episode:3" }
         ]});
         assert_eq!(queue_uris(&q), ["spotify:track:1", "spotify:track:2"]);
+    }
+
+    #[test]
+    fn queue_tracks_carry_soloists_metadata() {
+        let q = json!({ "type": "queue_changed", "upcoming": [{ "source": "autoplay", "item": {
+            "uri": "spotify:track:abc", "entity_type": "track",
+            "decorations": {
+                "identity": { "name": "Melodyjki" },
+                "visual_identity": { "cover": [
+                    { "url": "s", "size": "small" }, { "url": "d", "size": "default" },
+                    { "url": "x", "size": "xlarge" } ] },
+                "parent": { "entity": { "decorations": { "identity": { "name": "Album" } } } },
+                "creators": [
+                    { "entity": { "decorations": { "identity": { "name": "Borixon" } } } },
+                    { "entity": { "decorations": { "identity": { "name": "ReTo" } } } } ],
+                "playback": { "duration_ms": 144000 } } } }] });
+        let t = &queue_tracks(&q)[0];
+        assert_eq!(t.id.key(), "sp:abc");
+        assert_eq!(t.uri.as_deref(), Some("spotify:track:abc"));
+        assert_eq!(
+            (t.title.as_str(), t.artist.as_str()),
+            ("Melodyjki", "Borixon, ReTo")
+        );
+        assert_eq!(t.album, "Album");
+        assert_eq!((t.artwork.as_str(), t.thumb.as_str()), ("x", "d"));
+        assert_eq!(t.duration, 144_000);
     }
 
     #[test]

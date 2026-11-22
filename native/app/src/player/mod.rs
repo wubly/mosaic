@@ -14,7 +14,7 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use mosaic_audio::{AfterFade, Command, Curve, DeckId, Event, SourceSpec};
-use mosaic_core::model::{Repeat, Session, Settings, Source, Track};
+use mosaic_core::model::{Repeat, Session, Settings, Source, Track, TrackId};
 use mosaic_core::queue::{step_index, Queue};
 use mosaic_core::relevance::filter_along;
 use mosaic_services::soundcloud::silence::Silence;
@@ -95,6 +95,8 @@ pub enum Effect {
         seed: Track,
         purpose: RelatedPurpose,
     },
+    /// Ask Spotify to skip to its own next track.
+    SpotifySkip,
     Toast(String),
     RecordPlay(Track),
     AddSeconds(Track, u32),
@@ -146,6 +148,11 @@ pub enum PlayerInput {
         from: String,
         track: Track,
     },
+    /// Spotify's own up-next list for the track with URI `playing`.
+    SpotifyUpNext {
+        playing: Option<String>,
+        tracks: Vec<Track>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,6 +200,9 @@ pub struct PlayerController {
     resume_at: f64,
     silence: Option<Silence>,
     fetching_more: bool,
+    /// Tracks this player copied from Spotify's up-next list into the end of the queue; while
+    /// nothing else follows the current track, they're kept in step with Spotify's list.
+    spotify_tail: Vec<TrackId>,
     crossfading: f64,
     handed_over: bool,
     crossfade_for: Option<u64>,
@@ -228,6 +238,7 @@ impl PlayerController {
             resume_at: 0.0,
             silence: None,
             fetching_more: false,
+            spotify_tail: Vec::new(),
             crossfading: 0.0,
             handed_over: false,
             crossfade_for: None,
@@ -346,6 +357,9 @@ impl PlayerController {
             PlayerInput::SpotifyAvailable(on) => self.spotify_available = on,
             PlayerInput::Restore(session) => self.restore(session),
             PlayerInput::AdoptSpotify { from, track } => self.adopt_spotify(&from, track, now, fx),
+            PlayerInput::SpotifyUpNext { playing, tracks } => {
+                self.spotify_up_next(playing.as_deref(), tracks)
+            }
         }
     }
 
@@ -738,6 +752,12 @@ impl PlayerController {
         }
 
         let seed = self.queue.current().cloned();
+        let on_spotify = seed.as_ref().is_some_and(|t| t.source == Source::Spotify);
+        if on_spotify && !auto && direction > 0 {
+            // Nothing lined up here: Spotify's own next track, which the player then follows.
+            fx.push(Effect::SpotifySkip);
+            return;
+        }
         let can_continue = auto
             && self.settings.autoplay
             && !self.fetching_more
@@ -772,6 +792,49 @@ impl PlayerController {
                 self.play_index(index, LoadOpts::default(), now, fx);
             }
         }
+    }
+
+    /// Copies Spotify's up-next list in after the current track when nothing else follows it
+    /// here (or only tracks copied from an earlier list), so the queue shows what's coming and
+    /// skipping forward works. Only a list for the track playing here counts: right after
+    /// Spotify moves on, its list is for the next track.
+    fn spotify_up_next(&mut self, playing: Option<&str>, tracks: Vec<Track>) {
+        let Some(current) = self.queue.current() else {
+            return;
+        };
+        if current.source != Source::Spotify
+            || playing.is_none()
+            || current.uri.as_deref() != playing
+            || tracks.is_empty()
+        {
+            return;
+        }
+        let current_id = current.id.clone();
+        let after = self.queue.index as usize + 1;
+        let ours = self.queue.list[after..]
+            .iter()
+            .all(|t| self.spotify_tail.contains(&t.id));
+        if !ours {
+            return;
+        }
+        let mut fresh: Vec<Track> = Vec::new();
+        for t in tracks {
+            if t.id != current_id && !fresh.iter().any(|f| f.id == t.id) {
+                fresh.push(t);
+            }
+        }
+        let same = self.queue.list[after..].len() == fresh.len()
+            && self.queue.list[after..]
+                .iter()
+                .zip(&fresh)
+                .all(|(a, b)| a.id == b.id);
+        if same {
+            return;
+        }
+        self.spotify_tail = fresh.iter().map(|t| t.id.clone()).collect();
+        self.queue.list.truncate(after);
+        self.queue.list.extend(fresh);
+        self.queue_dirty = true;
     }
 
     fn repeat_current(&mut self, ended: bool, now: Instant, fx: &mut Vec<Effect>) {
