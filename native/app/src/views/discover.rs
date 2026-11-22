@@ -12,7 +12,7 @@ use crate::app::{App, Message};
 use crate::theme::{styles, Palette};
 use crate::widgets::icon::{icon, Icon};
 use crate::widgets::logo;
-use crate::widgets::smooth::{carousel, smooth};
+use crate::widgets::smooth::carousel;
 
 pub const GENRES: [(&str, &str); 7] = [
     ("all-music", "Trending"),
@@ -549,7 +549,7 @@ impl App {
                 }
             }
         }
-        smooth(
+        super::common::inset_scroll(
             scrollable(
                 container(body)
                     .padding(iced::Padding {
@@ -559,9 +559,8 @@ impl App {
                         left: 40.0,
                     })
                     .width(Length::Fill),
-            )
-            .style(styles::scrollbar(p))
-            .height(Length::Fill),
+            ),
+            p,
         )
     }
 }

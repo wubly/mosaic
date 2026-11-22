@@ -548,6 +548,8 @@ impl App {
                 self.source_pill(p)
             ]
             .spacing(10)
+            .align_x(Alignment::Center)
+            .width(Length::Fill)
             .into(),
         };
         let side = if v == Variant::Large {

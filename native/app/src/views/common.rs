@@ -124,9 +124,33 @@ pub fn empty_state<'a>(
     container(c).center_x(Length::Fill).padding([64, 0]).into()
 }
 
+/// Wraps a vertical page `scrollable` so its thumb stays inside the panel's rounded corners.
+///
+/// The panel clips rectangularly, so a thumb at the very top or bottom of the track would poke
+/// out past the curve (radius 28). Inset the track from both ends and from the right edge.
+pub fn inset_scroll<'a>(
+    scroll: scrollable::Scrollable<'a, Message>,
+    p: Palette,
+) -> Element<'a, Message> {
+    let scroll = scroll
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new()
+                .width(10)
+                .scroller_width(10)
+                .margin(4),
+        ))
+        .style(styles::scrollbar(p))
+        .height(Length::Fill);
+    container(crate::widgets::smooth::smooth(scroll))
+        .padding([14, 0])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 /// The standard scrolling page body (`.library`).
 pub fn page<'a>(content: impl Into<Element<'a, Message>>, p: Palette) -> Element<'a, Message> {
-    crate::widgets::smooth::smooth(
+    inset_scroll(
         scrollable(
             container(content)
                 .padding(iced::Padding {
@@ -137,9 +161,8 @@ pub fn page<'a>(content: impl Into<Element<'a, Message>>, p: Palette) -> Element
                 })
                 .width(Length::Fill),
         )
-        .on_scroll(|v| Message::Scrolled(v.absolute_offset().y, v.bounds().height))
-        .style(styles::scrollbar(p))
-        .height(Length::Fill),
+        .on_scroll(|v| Message::Scrolled(v.absolute_offset().y, v.bounds().height)),
+        p,
     )
 }
 

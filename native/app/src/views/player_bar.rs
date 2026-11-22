@@ -159,7 +159,7 @@ impl App {
                 )
                 .clip(true),
             ])
-            .width(Length::Fill),
+            .width(Length::Shrink),
             icon_btn(
                 if liked {
                     icon(Icon::Favorite, 22.0)
@@ -223,7 +223,7 @@ impl App {
 
         container(
             row![
-                container(now).width(Length::FillPortion(10)),
+                container(now).width(Length::FillPortion(10)).clip(true),
                 // Full controls need 84 px (56 transport + 28 seek); below that, the compact set.
                 container(self.controls(p, bar_h - 16.0 < 84.0)).width(Length::FillPortion(13)),
                 container(tools)
