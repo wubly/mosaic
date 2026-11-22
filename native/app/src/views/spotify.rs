@@ -280,7 +280,12 @@ impl App {
         }
         let services = self.services.clone();
         Task::perform(
-            async move { services.spotify_search(&q, 20).await.map_err(err) },
+            async move {
+                services
+                    .spotify_search(&q, mosaic_services::Services::SEARCH_LIMIT)
+                    .await
+                    .map_err(err)
+            },
             move |r| Message::Spotify(Msg::Search(seq, Box::new(r))),
         )
     }
@@ -424,8 +429,10 @@ impl App {
             Msg::Search(seq, result) => {
                 if seq == self.ui.discover.seq {
                     self.ui.discover.sp_busy = false;
-                    self.ui.spotify.search =
-                        result.map_or_else(|_| SearchResults::default(), |r| r);
+                    self.ui.spotify.search = result.unwrap_or_else(|e| {
+                        tracing::warn!("spotify search failed: {e}");
+                        SearchResults::default()
+                    });
                 }
                 Task::none()
             }

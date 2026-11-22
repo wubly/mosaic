@@ -41,6 +41,27 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
                 );
             }
         }
+        "sp-search" => {
+            let r = services
+                .spotify_search(arg(1)?, mosaic_services::Services::SEARCH_LIMIT)
+                .await?;
+            for t in &r.tracks {
+                println!(
+                    "{}\t{} - {}\t{}ms",
+                    t.id.key(),
+                    t.artist,
+                    t.title,
+                    t.duration
+                );
+            }
+            println!(
+                "{} tracks, {} artists, {} albums, {} playlists",
+                r.tracks.len(),
+                r.artists.len(),
+                r.albums.len(),
+                r.playlists.len()
+            );
+        }
         "sc-stream" => {
             let id = TrackId::Num(arg(1)?.parse()?);
             let s = services.sc_stream(&id).await?;

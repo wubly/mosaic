@@ -159,7 +159,11 @@ pub(crate) fn items(v: &Value) -> impl Iterator<Item = &Value> {
 }
 
 impl Services {
+    /// Spotify answers `/search` with "Invalid limit" above 10 results per type.
+    pub const SEARCH_LIMIT: u32 = 10;
+
     pub async fn spotify_search(&self, q: &str, limit: u32) -> Result<SearchResults> {
+        let limit = limit.clamp(1, Self::SEARCH_LIMIT);
         let json = self
             .spotify_api(
                 "/search",
