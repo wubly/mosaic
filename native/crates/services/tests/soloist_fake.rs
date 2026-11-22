@@ -22,7 +22,10 @@ fn fake_soloist(dir: &std::path::Path, port: u16) -> std::path::PathBuf {
         &path,
         format!(
             "#!/bin/sh\n\
+             cmd=\"$1\"; all=\"$*\"\n\
              while [ $# -gt 0 ]; do case \"$1\" in --data-dir) dir=\"$2\"; shift;; esac; shift; done\n\
+             if [ \"$cmd\" = setup-api-key ]; then read -r key; printf '%s' \"$key\" > \"$dir/api_key\"; exit 0; fi\n\
+             printf '%s' \"$all\" > \"$dir/args\"\n\
              echo $$ > \"$dir/soloist.pid\"\n\
              printf '127.0.0.1\\n' > \"$dir/ws.addr\"\n\
              printf '{port}\\n' > \"$dir/ws.port\"\n\
@@ -96,6 +99,17 @@ async fn soloist_plays_a_track_feeds_a_paced_clock_and_finishes_when_it_moves_on
     let mut ws = server.await.unwrap();
     assert!(matches!(playback, SpotifyPlayback::Soloist(_)));
     assert!(playback.describe().contains("paired"));
+    let soloist_dir = dir.path().join("data/soloist");
+    assert_eq!(
+        std::fs::read_to_string(soloist_dir.join("api_key")).unwrap(),
+        "test-key",
+        "the key goes in through setup-api-key"
+    );
+    let args = std::fs::read_to_string(soloist_dir.join("args")).unwrap();
+    assert!(
+        !args.contains("test-key") && !args.contains("--api-key"),
+        "the key never appears in the daemon's command line: {args}"
+    );
 
     let chunks = Arc::new(AtomicUsize::new(0));
     let finished = Arc::new(AtomicUsize::new(0));

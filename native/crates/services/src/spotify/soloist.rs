@@ -660,6 +660,41 @@ fn kill_stale(data_dir: &Path) {
     }
 }
 
+/// Saves the key into Soloist's data dir through `setup-api-key` (stdin), so the daemon reads it
+/// from there and it never shows up in its command line for other local users to see.
+async fn store_api_key(binary: &Path, data_dir: &Path, key: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new(binary)
+        .arg("setup-api-key")
+        .arg("--data-dir")
+        .arg(data_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| anyhow!("Could not start Spotify Soloist: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(format!("{key}\n").as_bytes()).await?;
+    }
+    let out = tokio::time::timeout(STARTUP_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| anyhow!("Spotify Soloist didn't save the API key in time"))??;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        let why = why.trim().trim_start_matches("Error:").trim();
+        bail!(
+            "Spotify Soloist rejected the API key{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            }
+        );
+    }
+    Ok(())
+}
+
 fn read_trimmed(path: &Path) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
@@ -688,11 +723,11 @@ impl Services {
         let addr_file = data_dir.join("ws.addr");
         let _ = std::fs::remove_file(&port_file);
 
+        store_api_key(&binary, &data_dir, settings.api_key.trim()).await?;
+
         let mut child = Command::new(&binary)
             .arg("--device-name")
             .arg(DEVICE_NAME)
-            .arg("--api-key")
-            .arg(settings.api_key.trim())
             .arg("--data-dir")
             .arg(&data_dir)
             .arg("--cache-dir")
@@ -967,11 +1002,11 @@ mod tests {
     fn queue_is_the_upcoming_list_never_the_history() {
         // The shape Soloist 1.4 sends: history first, then what's next.
         let q = json!({ "type": "queue_changed",
-            "previous": [{ "source": "context", "item": { "uri": "spotify:track:old" } }],
-            "upcoming": [
-                { "source": "autoplay", "item": { "uri": "spotify:track:n1" } },
-                { "source": "autoplay", "item": { "uri": "spotify:track:n2" } }
-            ]});
+        "previous": [{ "source": "context", "item": { "uri": "spotify:track:old" } }],
+        "upcoming": [
+            { "source": "autoplay", "item": { "uri": "spotify:track:n1" } },
+            { "source": "autoplay", "item": { "uri": "spotify:track:n2" } }
+        ]});
         assert_eq!(queue_uris(&q), ["spotify:track:n1", "spotify:track:n2"]);
         let only_history = json!({ "type": "queue_changed",
             "previous": [{ "item": { "uri": "spotify:track:old" } }] });
