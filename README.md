@@ -21,7 +21,7 @@ a desktop music player for soundcloud and your own files. native rust (iced), ma
 
 ## build it
 
-the native app lives in `native/` (the old electron app is still in the repo root until you run the steps in `MIGRATION.md`).
+the app lives in `native/`, a cargo workspace.
 
 ```
 cd native
