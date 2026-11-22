@@ -13,6 +13,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 material-colors = { version = "0.5.0", features = ["quantize"] }
 mosaic-audio = { version = "0.5.0", path = "../crates/audio" }
 mosaic-core = { version = "0.5.0", path = "../crates/core" }
+mosaic-platform = { version = "0.5.0", path = "../crates/platform" }
 mosaic-services = { version = "0.5.0", path = "../crates/services" }
 rand = "0.10"
 serde_json = "1.0.154"

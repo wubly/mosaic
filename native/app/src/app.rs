@@ -38,6 +38,7 @@ pub struct Flags {
     pub services: Services,
     pub engine: Option<Engine>,
     pub engine_error: Option<String>,
+    pub media: Option<mosaic_platform::media_controls::Media>,
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<std::path::PathBuf>,
 }
@@ -48,6 +49,14 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
     Player(PlayerInput),
+    Nop,
+    SeekFraction(f32),
+    VolumeFraction(f32),
+    ToggleLike,
+    OpenNowPlaying,
+    ToggleMini,
+    ToggleLyrics,
+    Tune(crate::views::tune::Msg),
     External(External),
     Nav(View),
     Frame(Instant),
@@ -75,48 +84,54 @@ pub enum Message {
     },
 }
 
-struct Toast {
+pub(crate) struct Toast {
     id: u64,
     message: String,
     expires: Instant,
 }
 
-struct AmbientLayer {
+pub(crate) struct AmbientLayer {
     handle: image::Handle,
 }
 
 #[derive(Default)]
-struct Ui {
-    view: Option<View>,
-    palette_open: bool,
-    now_playing: bool,
-    mini: bool,
+pub(crate) struct Ui {
+    pub(crate) view: Option<View>,
+    pub(crate) palette_open: bool,
+    pub(crate) now_playing: bool,
+    pub(crate) mini: bool,
+    pub(crate) tune: Option<crate::views::tune::Tab>,
 }
 
 pub struct App {
-    main: window::Id,
-    size: Size,
-    maximized: bool,
-    decorations: bool,
-    dirs: Dirs,
-    services: Services,
-    store: Store,
-    saver: Saver,
-    engine: Option<Engine>,
+    pub(crate) main: window::Id,
+    pub(crate) size: Size,
+    pub(crate) maximized: bool,
+    pub(crate) decorations: bool,
+    pub(crate) dirs: Dirs,
+    pub(crate) services: Services,
+    pub(crate) store: Store,
+    pub(crate) saver: Saver,
+    pub(crate) engine: Option<Engine>,
     pub engine_error: Option<String>,
-    player: PlayerController,
-    ui: Ui,
-    drag: Option<Axis>,
-    theme: DynamicTheme,
-    anim: AnimationClock,
-    toasts: Vec<Toast>,
-    toast_seq: u64,
-    images: ImageCache,
-    ambient: Option<AmbientLayer>,
-    ambient_prev: Option<AmbientLayer>,
-    art_src: String,
-    now: Instant,
-    debug_screenshot: Option<std::path::PathBuf>,
+    pub(crate) player: PlayerController,
+    pub(crate) ui: Ui,
+    pub(crate) drag: Option<Axis>,
+    pub(crate) theme: DynamicTheme,
+    pub(crate) anim: AnimationClock,
+    pub(crate) toasts: Vec<Toast>,
+    pub(crate) toast_seq: u64,
+    pub(crate) images: ImageCache,
+    pub(crate) ambient: Option<AmbientLayer>,
+    pub(crate) ambient_prev: Option<AmbientLayer>,
+    pub(crate) art_src: String,
+    pub(crate) media: Option<mosaic_platform::media_controls::Media>,
+    pub(crate) media_track: Option<mosaic_core::model::TrackId>,
+    pub(crate) discord: mosaic_services::discord::Discord,
+    pub(crate) now: Instant,
+    pub(crate) pos_at: Instant,
+    pub(crate) epoch: Instant,
+    pub(crate) debug_screenshot: Option<std::path::PathBuf>,
 }
 
 fn clamp(v: f64, (lo, hi, _): (f64, f64, f64)) -> f64 {
@@ -159,7 +174,12 @@ impl App {
             ambient: None,
             ambient_prev: None,
             art_src: String::new(),
+            media: flags.media,
+            media_track: None,
+            discord: mosaic_services::discord::Discord::spawn(),
             now,
+            pos_at: now,
+            epoch: now,
             debug_screenshot: flags.debug_screenshot,
         };
         app.retarget_rail();
@@ -182,15 +202,15 @@ impl App {
         (app, Task::batch(tasks))
     }
 
-    fn view_kind(&self) -> View {
+    pub(crate) fn view_kind(&self) -> View {
         self.ui.view.unwrap_or(View::Discover)
     }
 
-    fn palette(&self) -> Palette {
+    pub(crate) fn palette(&self) -> Palette {
         self.theme.current
     }
 
-    fn settings(&self) -> &Settings {
+    pub(crate) fn settings(&self) -> &Settings {
         &self.store.settings
     }
 
@@ -208,7 +228,7 @@ impl App {
         self.saver.schedule(&self.store);
     }
 
-    fn toast(&mut self, message: impl Into<String>) {
+    pub(crate) fn toast(&mut self, message: impl Into<String>) {
         self.toast_seq += 1;
         self.toasts.push(Toast {
             id: self.toast_seq,
@@ -219,18 +239,33 @@ impl App {
         self.toasts.drain(..extra);
     }
 
-    fn set_setting(&mut self, f: impl FnOnce(&mut Settings)) -> Task<Message> {
+    pub(crate) fn set_setting(&mut self, f: impl FnOnce(&mut Settings)) -> Task<Message> {
         f(&mut self.store.settings);
         self.touch();
         let settings = self.store.settings.clone();
         self.player_input(PlayerInput::SettingsChanged(settings))
     }
 
-    fn player_input(&mut self, input: PlayerInput) -> Task<Message> {
+    pub(crate) fn player_input(&mut self, input: PlayerInput) -> Task<Message> {
         let before = self.player.track.as_ref().map(|t| t.id.clone());
         let fx = self.player.handle(input, Instant::now());
         let task = self.run_effects(fx);
         let after = self.player.track.as_ref().map(|t| t.id.clone());
+        let busy = self.player.playing && !self.player.loading;
+        let now = Instant::now();
+        self.anim.tween(
+            "seek-amp",
+            if busy { 1.0 } else { 0.02 },
+            now,
+            Duration::from_millis(450),
+            Ease::Out,
+        );
+        self.anim.spring(
+            "play-radius",
+            if self.player.playing { 28.0 } else { 18.0 },
+            420.0,
+            28.0,
+        );
         if before != after {
             return Task::batch([task, self.track_changed()]);
         }
@@ -366,10 +401,60 @@ impl App {
                     }
                     self.touch();
                 }
-                Effect::Presence(_) | Effect::PresenceEnabled(_) | Effect::MediaControls(_) => {}
+                Effect::Presence(payload) => {
+                    self.discord
+                        .update(payload.map(|p| mosaic_services::discord::Payload {
+                            title: p.title,
+                            artist: p.artist,
+                            album: p.album,
+                            artwork: p.artwork,
+                            url: p.url,
+                            duration_ms: p.duration_ms,
+                            position_ms: p.position_ms,
+                        }))
+                }
+                Effect::PresenceEnabled(on) => self.discord.set_enabled(on),
+                Effect::MediaControls(state) => self.update_media(&state),
             }
         }
         Task::batch(tasks)
+    }
+
+    fn update_media(&mut self, state: &crate::player::MediaState) {
+        let Some(media) = &mut self.media else { return };
+        let id = state.track.as_ref().map(|t| t.id.clone());
+        if id != self.media_track {
+            self.media_track = id;
+            if let Some(t) = &state.track {
+                media.set_metadata(&mosaic_platform::media_controls::Metadata {
+                    title: t.title.clone(),
+                    artist: t.artist.clone(),
+                    album: t.album.clone(),
+                    cover: mosaic_platform::media_controls::cover_url(&t.artwork),
+                    duration: (t.duration > 0).then(|| Duration::from_millis(t.duration)),
+                });
+            }
+        }
+        media.set_playback(state.track.is_some(), state.playing, state.position);
+    }
+
+    fn on_media(&mut self, cmd: mosaic_platform::media_controls::MediaCommand) -> Task<Message> {
+        use mosaic_platform::media_controls::MediaCommand as C;
+        let playing = self.player.playing;
+        let position = self.player.time.current;
+        let input = match cmd {
+            C::Toggle => PlayerInput::Toggle,
+            C::Play if !playing => PlayerInput::Toggle,
+            C::Pause if playing => PlayerInput::Toggle,
+            C::Play | C::Pause => return Task::none(),
+            C::Next => PlayerInput::Next,
+            C::Previous => PlayerInput::Prev,
+            C::Stop => PlayerInput::Stop,
+            C::SeekTo(secs) => PlayerInput::Seek(secs),
+            C::SeekBy(delta) => PlayerInput::Seek((position + delta).max(0.0)),
+            C::Raise => return window::gain_focus(self.main),
+        };
+        self.player_input(input)
     }
 
     fn image_requests(&mut self) -> Task<Message> {
@@ -401,8 +486,41 @@ impl App {
         match message {
             Message::Player(input) => self.player_input(input),
             Message::External(External::Engine(event)) => {
+                if matches!(
+                    event,
+                    mosaic_audio::Event::Position { .. } | mosaic_audio::Event::Seeked { .. }
+                ) {
+                    self.pos_at = Instant::now();
+                }
                 self.player_input(PlayerInput::Engine(event))
             }
+            Message::External(External::Media(cmd)) => self.on_media(cmd),
+            Message::Nop => Task::none(),
+            Message::SeekFraction(f) => {
+                let t = self.player.time;
+                let (_, shown) =
+                    crate::views::player_bar::shown_times(t.current, t.duration, t.offset, t.tail);
+                self.pos_at = self.now;
+                self.player_input(PlayerInput::Seek(f64::from(f) * shown + t.offset))
+            }
+            Message::VolumeFraction(f) => {
+                let v = (f64::from(f) * 100.0).round() / 100.0;
+                self.player_input(PlayerInput::SetVolume(v))
+            }
+            Message::ToggleLike => self.toggle_like(),
+            Message::OpenNowPlaying => {
+                self.ui.now_playing = true;
+                Task::none()
+            }
+            Message::ToggleMini => {
+                self.ui.mini = !self.ui.mini;
+                Task::none()
+            }
+            Message::ToggleLyrics => {
+                let open = self.settings().lyrics_open;
+                self.set_setting(|s| s.lyrics_open = !open)
+            }
+            Message::Tune(msg) => self.on_tune(msg),
             Message::Nav(view) => {
                 self.ui.view = Some(view);
                 self.retarget_rail();
@@ -443,6 +561,7 @@ impl App {
             }
             Message::CloseRequested(_) => {
                 let _ = self.saver.flush(&self.store);
+                self.discord.shutdown();
                 iced::exit()
             }
             Message::DragWindow => window::drag(self.main),
@@ -532,6 +651,30 @@ impl App {
         }
     }
 
+    fn on_tune(&mut self, msg: crate::views::tune::Msg) -> Task<Message> {
+        use crate::views::tune::{apply_eq, Msg, Tab};
+        match msg {
+            Msg::Toggle => {
+                self.ui.tune = match self.ui.tune {
+                    Some(_) => None,
+                    None => Some(Tab::Equalizer),
+                };
+                Task::none()
+            }
+            Msg::Close => {
+                self.ui.tune = None;
+                Task::none()
+            }
+            Msg::Tab(tab) => {
+                self.ui.tune = Some(tab);
+                Task::none()
+            }
+            Msg::Speed(v) => self.player_input(PlayerInput::SetSpeed(v)),
+            Msg::Sleep(req) => self.player_input(PlayerInput::SetSleep(req)),
+            eq => self.set_setting(|s| apply_eq(s, &eq)),
+        }
+    }
+
     fn is_debug_theme(&self, _src: &str) -> bool {
         self.art_src.is_empty()
     }
@@ -548,6 +691,12 @@ impl App {
             && matches!(key.as_ref(), keyboard::Key::Character(c) if c.eq_ignore_ascii_case("k"))
         {
             self.ui.palette_open = !self.ui.palette_open;
+            return Task::none();
+        }
+        if matches!(key.as_ref(), keyboard::Key::Named(Named::Escape)) {
+            self.ui.tune = None;
+            self.ui.now_playing = false;
+            self.ui.palette_open = false;
             return Task::none();
         }
         if captured || self.ui.palette_open || ctrl || modifiers.alt() {
@@ -676,6 +825,9 @@ impl App {
             .iter()
             .map(|t| (t.id, t.message.clone()))
             .collect();
+        if let Some(tab) = self.ui.tune {
+            layers = layers.push(self.tune_overlay(tab, p));
+        }
         layers = layers.push(toast::view(&messages, p));
         container(layers)
             .width(Length::Fill)
@@ -807,7 +959,6 @@ impl App {
 
     fn shell(&self, p: Palette) -> Element<'_, Message> {
         let s = self.settings();
-        let bar_h = s.bar_height as f32;
         let side_w = s.side_width as f32;
         let current = self.view_kind();
 
@@ -842,10 +993,7 @@ impl App {
                         .style(styles::glass(p)),
                 );
         }
-        let bar = container(Space::new())
-            .width(Length::Fill)
-            .height(bar_h)
-            .style(styles::glass(p));
+        let bar = self.player_bar(p);
         let gap = row![
             Space::new().width(rail::WIDTH),
             resizer(

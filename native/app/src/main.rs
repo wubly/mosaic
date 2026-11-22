@@ -13,6 +13,7 @@ mod images;
 mod player;
 mod resolve;
 mod theme;
+mod views;
 mod widgets;
 
 use std::sync::{Arc, Mutex};
@@ -56,6 +57,10 @@ fn main() -> anyhow::Result<()> {
         }
         Err(_) => (None, Some("No audio output device found".to_string())),
     };
+    let media = mosaic_platform::media_controls::Media::new(None, |cmd| {
+        let _ = external::sender().send(external::External::Media(cmd));
+    })
+    .ok();
     if let Ok(mut flags) = FLAGS.lock() {
         *flags = Some(Flags {
             dirs,
@@ -64,6 +69,7 @@ fn main() -> anyhow::Result<()> {
             services,
             engine,
             engine_error,
+            media,
             debug_theme: args.debug_theme,
             debug_screenshot: args.debug_screenshot,
         });

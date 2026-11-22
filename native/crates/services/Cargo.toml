@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+discord-rich-presence = "1.1.0"
 futures = "0.3.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 lofty = "0.25.5"

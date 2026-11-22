@@ -29,3 +29,9 @@ One line per decision: `Mn: decision`.
 - M6: Ambient image is drawn with `Image::scale(1.3)` + Cover instead of `inset: -15%`; the lyrics aside appears without its spring animation until M10.
 - M6: Crate-level `allow(dead_code)` in `main.rs` until views consume the style/icon/anim helpers; removed in M13.
 - M6: Idle CPU (release build, nothing playing) measured at ~0.5 % of a core.
+- M7: Media controls use souvlaki with the `use_zbus` backend (no libdbus); the Windows HWND is passed as `None` for now (SMTC needs it; wire `window::run` + raw-window-handle when building on Windows). MPRIS verified with `playerctl` on Linux.
+- M7: Discord status exposes `enabled/connected/error` only (the IPC crate doesn't return the Discord username). Timestamps are anchored at push time (position + time since the update) rather than at update time, so a throttled push doesn't drift.
+- M7: Seek bar position is extrapolated between the engine's 100 ms Position events while playing; frames run only while a track is playing/loading.
+- M7: Player-bar entrance spring, thumb swap animation and the play-icon scale/rotate swap are omitted; the play button radius spring (420/28), wave amplitude tween and spinner are implemented.
+- M7: Tune popover is positioned at a fixed offset above the right tools cluster instead of anchoring to the button; it dismisses on Esc or a click outside.
+- M7: Not verified here: Discord "Listening to" display (no Discord running) and GNOME/KDE widget cover rendering; MPRIS metadata/status/next verified via playerctl.
