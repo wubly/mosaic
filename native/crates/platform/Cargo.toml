@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+open = "5.4.5"
 souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }

@@ -50,6 +50,11 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 pub enum Message {
     Player(PlayerInput),
     Nop,
+    Track(crate::views::track::Msg),
+    Discover(crate::views::discover::Msg),
+    Palette(crate::views::palette::Msg),
+    Cursor(Point),
+    Scanned(Result<Vec<mosaic_core::model::Track>, String>),
     SeekFraction(f32),
     VolumeFraction(f32),
     ToggleLike,
@@ -101,6 +106,10 @@ pub(crate) struct Ui {
     pub(crate) now_playing: bool,
     pub(crate) mini: bool,
     pub(crate) tune: Option<crate::views::tune::Tab>,
+    pub(crate) discover: crate::views::discover::State,
+    pub(crate) menu: Option<crate::views::track::MenuState>,
+    pub(crate) palette: crate::views::palette::State,
+    pub(crate) importing: bool,
 }
 
 pub struct App {
@@ -128,6 +137,9 @@ pub struct App {
     pub(crate) media: Option<mosaic_platform::media_controls::Media>,
     pub(crate) media_track: Option<mosaic_core::model::TrackId>,
     pub(crate) discord: mosaic_services::discord::Discord,
+    pub(crate) local: Vec<mosaic_core::model::Track>,
+    pub(crate) recent: Vec<mosaic_core::model::Track>,
+    pub(crate) cursor: Point,
     pub(crate) now: Instant,
     pub(crate) pos_at: Instant,
     pub(crate) epoch: Instant,
@@ -177,13 +189,17 @@ impl App {
             media: flags.media,
             media_track: None,
             discord: mosaic_services::discord::Discord::spawn(),
+            local: Vec::new(),
+            recent: Vec::new(),
+            cursor: Point::ORIGIN,
             now,
             pos_at: now,
             epoch: now,
             debug_screenshot: flags.debug_screenshot,
         };
         app.retarget_rail();
-        let mut tasks = vec![open.discard()];
+        app.refresh_recent();
+        let mut tasks = vec![open.discard(), app.discover_boot(), app.scan()];
         let fx = app.player.sync_engine();
         tasks.push(app.run_effects(fx));
         if let Some(session) = app.store.session.clone() {
@@ -191,7 +207,7 @@ impl App {
         }
         if app.debug_screenshot.is_some() {
             tasks.push(
-                Task::future(tokio::time::sleep(Duration::from_secs(3)))
+                Task::future(tokio::time::sleep(Duration::from_secs(8)))
                     .then(move |_| window::screenshot(main))
                     .map(Message::Screenshot),
             );
@@ -219,12 +235,12 @@ impl App {
         (self.size.height - TITLEBAR - 16.0 - bar - 16.0).max(0.0)
     }
 
-    fn retarget_rail(&mut self) {
+    pub(crate) fn retarget_rail(&mut self) {
         let y = rail::pill_y(self.view_kind(), false, self.rail_height());
         self.anim.spring("rail-pill", y, 500.0, 36.0);
     }
 
-    fn touch(&mut self) {
+    pub(crate) fn touch(&mut self) {
         self.saver.schedule(&self.store);
     }
 
@@ -420,6 +436,28 @@ impl App {
         Task::batch(tasks)
     }
 
+    pub(crate) fn refresh_recent(&mut self) {
+        self.recent = self.recent_tracks();
+    }
+
+    pub(crate) fn scan(&mut self) -> Task<Message> {
+        let sources = self.store.sources.clone();
+        if sources.is_empty() {
+            self.local.clear();
+            return Task::none();
+        }
+        let services = self.services.clone();
+        Task::perform(
+            async move {
+                services
+                    .scan_paths(&sources)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::Scanned,
+        )
+    }
+
     fn update_media(&mut self, state: &crate::player::MediaState) {
         let Some(media) = &mut self.media else { return };
         let id = state.track.as_ref().map(|t| t.id.clone());
@@ -496,6 +534,19 @@ impl App {
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
             Message::Nop => Task::none(),
+            Message::Track(msg) => self.on_track(msg),
+            Message::Discover(msg) => self.on_discover(msg),
+            Message::Palette(msg) => self.on_palette(msg),
+            Message::Cursor(p) => {
+                self.cursor = p;
+                Task::none()
+            }
+            Message::Scanned(result) => {
+                if let Ok(tracks) = result {
+                    self.local = tracks;
+                }
+                Task::none()
+            }
             Message::SeekFraction(f) => {
                 let t = self.player.time;
                 let (_, shown) =
@@ -695,6 +746,7 @@ impl App {
         }
         if matches!(key.as_ref(), keyboard::Key::Named(Named::Escape)) {
             self.ui.tune = None;
+            self.ui.menu = None;
             self.ui.now_playing = false;
             self.ui.palette_open = false;
             return Task::none();
@@ -740,9 +792,7 @@ impl App {
                     }
                     return Task::none();
                 }
-                "/" => {
-                    return self.handle(Message::Nav(View::Discover));
-                }
+                "/" => return self.start_search(String::new()),
                 _ => None,
             },
             _ => None,
@@ -825,6 +875,12 @@ impl App {
             .iter()
             .map(|t| (t.id, t.message.clone()))
             .collect();
+        if let Some(menu) = &self.ui.menu {
+            layers = layers.push(self.track_menu(menu, p));
+        }
+        if self.ui.palette_open {
+            layers = layers.push(self.palette_view(p));
+        }
         if let Some(tab) = self.ui.tune {
             layers = layers.push(self.tune_overlay(tab, p));
         }
@@ -970,8 +1026,13 @@ impl App {
             p,
             Message::Nav,
         );
-        let main = container(text(current.label()).size(28).color(p.on_surface))
-            .padding([32, 40])
+        let content: Element<'_, Message> = match current {
+            View::Discover => self.discover_view(p),
+            other => container(text(other.label()).size(28).color(p.on_surface))
+                .padding([32, 40])
+                .into(),
+        };
+        let main = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(styles::glass(p));

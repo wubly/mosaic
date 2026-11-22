@@ -1,4 +1,7 @@
+pub mod discover;
+pub mod palette;
 pub mod player_bar;
+pub mod track;
 pub mod tune;
 
 use iced::widget::{container, image, Space};

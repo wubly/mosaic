@@ -35,3 +35,8 @@ One line per decision: `Mn: decision`.
 - M7: Player-bar entrance spring, thumb swap animation and the play-icon scale/rotate swap are omitted; the play button radius spring (420/28), wave amplitude tween and spinner are implemented.
 - M7: Tune popover is positioned at a fixed offset above the right tools cluster instead of anchoring to the button; it dismisses on Esc or a click outside.
 - M7: Not verified here: Discord "Listening to" display (no Discord running) and GNOME/KDE widget cover rendering; MPRIS metadata/status/next verified via playerctl.
+- M8: Track clicks carry a `TrackRef { list: ListRef, index }` instead of a cloned list; `App::resolve_list` rebuilds the list when the click is handled (results are re-filtered with `filter_along` like `queueable`).
+- M8: Context menu opens at the last known cursor position (tracked from `CursorMoved`), so "more" buttons open it at the button and right-click at the pointer; it is clamped using an estimated height.
+- M8: Skeletons are static blocks (no shimmer); search-bar focus animation and the tile hover lift/entrance animation are omitted. Tiles use a wrapping row (fixed 156/148 px) rather than a stretching CSS grid.
+- M8: Spotify and YouTube sections of Discover are omitted (YouTube dropped; Spotify arrives in M11). Device hits and the palette's track search use the scanner results held in `App::local`.
+- M8: Palette keyboard handling: Up/Down/Esc in the global key handler, Enter via the text input's submit.
