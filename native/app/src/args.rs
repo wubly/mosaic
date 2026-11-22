@@ -5,6 +5,8 @@ pub struct Args {
     pub version: bool,
     pub data_dir: Option<PathBuf>,
     pub reset_window: bool,
+    pub debug_theme: Option<String>,
+    pub debug_screenshot: Option<PathBuf>,
     pub debug_cmd: Option<Vec<String>>,
     pub files: Vec<PathBuf>,
 }
@@ -17,6 +19,8 @@ impl Args {
             match arg.as_str() {
                 "--version" | "-V" => out.version = true,
                 "--reset-window" => out.reset_window = true,
+                "--debug-screenshot" => out.debug_screenshot = it.next().map(PathBuf::from),
+                "--debug-theme" => out.debug_theme = it.next(),
                 "--data-dir" => out.data_dir = it.next().map(PathBuf::from),
                 "--debug-cmd" => {
                     out.debug_cmd = Some(it.by_ref().collect());

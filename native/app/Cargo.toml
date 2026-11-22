@@ -6,8 +6,11 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = "0.4.45"
 crossbeam-channel = "0.5.17"
-iced = { version = "0.14.0", features = ["tokio", "image"] }
+iced = { version = "0.14.0", features = ["tokio", "image", "canvas", "advanced"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+material-colors = { version = "0.5.0", features = ["quantize"] }
 mosaic-audio = { version = "0.5.0", path = "../crates/audio" }
 mosaic-core = { version = "0.5.0", path = "../crates/core" }
 mosaic-services = { version = "0.5.0", path = "../crates/services" }

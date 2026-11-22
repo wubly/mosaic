@@ -1,77 +1,26 @@
+// Library pieces (styles, icons, animation helpers) are consumed by views added in M7-M12; this
+// allowance is removed in M13.
+#![allow(dead_code)]
+
+mod ambient;
+mod anim;
+mod app;
 mod args;
 #[cfg(feature = "debug-cli")]
 mod debug_cli;
-#[allow(dead_code)] // the UI consumes the remaining effects from M7
+mod external;
+mod images;
 mod player;
 mod resolve;
+mod theme;
+mod widgets;
 
-use iced::widget::{container, text};
-use iced::{window, Color, Element, Size, Task, Theme};
-use mosaic_core::storage::Dirs;
+use std::sync::{Arc, Mutex};
 
-const ICON: &[u8] = include_bytes!("../../assets/icon.png");
-
-struct App {
-    main: window::Id,
-}
-
-#[derive(Debug, Clone)]
-enum Message {
-    WindowClosed(window::Id),
-}
-
-impl App {
-    fn boot() -> (Self, Task<Message>) {
-        let (main, open) = window::open(window_settings());
-        (Self { main }, open.discard())
-    }
-
-    fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::WindowClosed(id) if id == self.main => iced::exit(),
-            Message::WindowClosed(_) => Task::none(),
-        }
-    }
-
-    fn view(&self, _window: window::Id) -> Element<'_, Message> {
-        container(text("Mosaic")).center(iced::Fill).into()
-    }
-
-    fn title(&self, _window: window::Id) -> String {
-        "Mosaic".into()
-    }
-
-    fn theme(&self, _window: window::Id) -> Theme {
-        Theme::Dark
-    }
-
-    fn style(&self, theme: &Theme) -> iced::theme::Style {
-        iced::theme::Style {
-            background_color: Color::from_rgb8(0x14, 0x12, 0x18),
-            text_color: theme.palette().text,
-        }
-    }
-
-    fn subscription(&self) -> iced::Subscription<Message> {
-        window::close_events().map(Message::WindowClosed)
-    }
-}
-
-fn window_settings() -> window::Settings {
-    let decorations = std::env::var_os("MOSAIC_DECORATIONS").is_some_and(|v| v == "1");
-    window::Settings {
-        size: Size::new(1280.0, 820.0),
-        min_size: Some(Size::new(980.0, 640.0)),
-        decorations,
-        icon: window::icon::from_file_data(ICON, None).ok(),
-        #[cfg(target_os = "linux")]
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: "mosaic".into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
+use app::{App, Flags, FLAGS};
+use mosaic_audio::Engine;
+use mosaic_core::storage::{load_config, load_store, migrate_legacy, Dirs};
+use mosaic_services::Services;
 
 fn main() -> anyhow::Result<()> {
     let args = args::Args::parse(std::env::args().skip(1));
@@ -87,8 +36,43 @@ fn main() -> anyhow::Result<()> {
     if let Some(cmd) = &args.debug_cmd {
         return debug_cli::run(dirs, cmd);
     }
-    let _ = dirs;
+
+    let _ = migrate_legacy(&dirs);
+    let config = Arc::new(Mutex::new(load_config(&dirs)));
+    let store = load_store(&dirs);
+    let services = Services::new(dirs.clone(), Arc::clone(&config))?;
+    let (engine, engine_error) = match Engine::start() {
+        Ok(engine) => {
+            let events = engine.events();
+            std::thread::spawn(move || {
+                let tx = external::sender();
+                for event in events.iter() {
+                    if tx.send(external::External::Engine(event)).is_err() {
+                        break;
+                    }
+                }
+            });
+            (Some(engine), None)
+        }
+        Err(_) => (None, Some("No audio output device found".to_string())),
+    };
+    if let Ok(mut flags) = FLAGS.lock() {
+        *flags = Some(Flags {
+            dirs,
+            config,
+            store,
+            services,
+            engine,
+            engine_error,
+            debug_theme: args.debug_theme,
+            debug_screenshot: args.debug_screenshot,
+        });
+    }
     iced::daemon(App::boot, App::update, App::view)
+        .font(include_bytes!("../../assets/fonts/RobotoFlex.ttf").as_slice())
+        .font(include_bytes!("../../assets/fonts/MosaicSymbols-filled.ttf").as_slice())
+        .font(include_bytes!("../../assets/fonts/MosaicSymbols-outlined.ttf").as_slice())
+        .default_font(iced::Font::with_name("Roboto Flex"))
         .title(App::title)
         .theme(App::theme)
         .style(App::style)

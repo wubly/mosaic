@@ -104,7 +104,7 @@ pub enum Effect {
     Setting(Setting),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlayerInput {
     Play(Track, Option<Vec<Track>>),
     PlayIndex(usize),
