@@ -163,7 +163,7 @@ fn event_uri(ev: &Value) -> Option<String> {
             Value::Object(map) => map
                 .iter()
                 .filter(|(k, _)| {
-                    !["queue", "next", "prev", "context"]
+                    !["queue", "next", "prev", "upcoming", "context"]
                         .iter()
                         .any(|x| k.contains(x))
                 })
@@ -203,10 +203,14 @@ fn queue_uris(ev: &Value) -> Vec<String> {
             _ => {}
         }
     }
-    let list = ["next_tracks", "tracks", "queue", "items"]
+    // Soloist 1.4 sends `upcoming` beside `previous` (what already played). Never fall back to
+    // walking the whole event: that mixes the history into "up next".
+    let Some(list) = ["upcoming", "next_tracks", "tracks", "queue", "items"]
         .into_iter()
         .find_map(|k| ev.get(k).filter(|v| v.is_array()))
-        .unwrap_or(ev);
+    else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     walk(list, &mut out);
     out
@@ -957,6 +961,21 @@ mod tests {
             { "uri": "spotify:episode:3" }
         ]});
         assert_eq!(queue_uris(&q), ["spotify:track:1", "spotify:track:2"]);
+    }
+
+    #[test]
+    fn queue_is_the_upcoming_list_never_the_history() {
+        // The shape Soloist 1.4 sends: history first, then what's next.
+        let q = json!({ "type": "queue_changed",
+            "previous": [{ "source": "context", "item": { "uri": "spotify:track:old" } }],
+            "upcoming": [
+                { "source": "autoplay", "item": { "uri": "spotify:track:n1" } },
+                { "source": "autoplay", "item": { "uri": "spotify:track:n2" } }
+            ]});
+        assert_eq!(queue_uris(&q), ["spotify:track:n1", "spotify:track:n2"]);
+        let only_history = json!({ "type": "queue_changed",
+            "previous": [{ "item": { "uri": "spotify:track:old" } }] });
+        assert!(queue_uris(&only_history).is_empty());
     }
 
     #[test]
