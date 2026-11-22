@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mosaic
+GenericName=Music Player
+Comment=SoundCloud and your own music in one player
+Exec=mosaic %F
+Icon=app.mosaic.player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/mp4;
+StartupWMClass=mosaic

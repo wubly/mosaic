@@ -39,6 +39,8 @@ pub struct Flags {
     pub engine: Option<Engine>,
     pub engine_error: Option<String>,
     pub media: Option<mosaic_platform::media_controls::Media>,
+    pub tray: Option<mosaic_platform::tray::Tray>,
+    pub files: Vec<std::path::PathBuf>,
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<std::path::PathBuf>,
     pub debug_view: Option<String>,
@@ -52,6 +54,9 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 pub enum Message {
     Player(PlayerInput),
     Nop,
+    Settings(crate::views::settings::Msg),
+    Onboarding(crate::views::onboarding::Msg),
+    UpdateTimer,
     Spotify(crate::views::spotify::Msg),
     Import(crate::views::import::Msg),
     Lyrics(crate::views::lyrics::Msg),
@@ -70,6 +75,7 @@ pub enum Message {
     Palette(crate::views::palette::Msg),
     Cursor(Point),
     Scanned(Result<Vec<mosaic_core::model::Track>, String>),
+    Opened(Vec<mosaic_core::model::Track>, Vec<String>),
     SeekFraction(f32),
     VolumeFraction(f32),
     ToggleLike,
@@ -125,6 +131,10 @@ pub(crate) struct Ui {
     pub(crate) menu: Option<crate::views::track::MenuState>,
     pub(crate) palette: crate::views::palette::State,
     pub(crate) importing: bool,
+    pub(crate) update: mosaic_services::update::UpdateState,
+    pub(crate) checking_update: bool,
+    pub(crate) onboarding: Option<crate::views::onboarding::State>,
+    pub(crate) hidden: bool,
     pub(crate) spotify: crate::views::spotify::State,
     pub(crate) import: crate::views::import::State,
     pub(crate) lyrics: crate::views::lyrics::State,
@@ -160,6 +170,8 @@ pub struct App {
     pub(crate) ambient_prev: Option<AmbientLayer>,
     pub(crate) art_src: String,
     pub(crate) media: Option<mosaic_platform::media_controls::Media>,
+    pub(crate) tray: Option<mosaic_platform::tray::Tray>,
+    pub(crate) tray_available: bool,
     pub(crate) media_track: Option<mosaic_core::model::TrackId>,
     pub(crate) discord: mosaic_services::discord::Discord,
     pub(crate) local: Vec<mosaic_core::model::Track>,
@@ -217,6 +229,8 @@ impl App {
             ambient_prev: None,
             art_src: String::new(),
             media: flags.media,
+            tray_available: flags.tray.is_some(),
+            tray: flags.tray,
             media_track: None,
             discord: mosaic_services::discord::Discord::spawn(),
             local: Vec::new(),
@@ -247,6 +261,9 @@ impl App {
                 app.ui.view = Some(View::Library);
                 app.ui.library.tab = crate::views::library::Tab::Stats;
             }
+        }
+        if !app.services.config().onboarded.unwrap_or(false) {
+            app.begin_onboarding();
         }
         app.retarget_rail();
         app.refresh_recent();
@@ -573,6 +590,66 @@ impl App {
         )
     }
 
+    pub(crate) fn quit(&mut self) -> Task<Message> {
+        let _ = self.saver.flush(&self.store);
+        self.discord.shutdown();
+        if let Some(engine) = &self.engine {
+            engine.send(mosaic_audio::Command::Shutdown);
+        }
+        iced::exit()
+    }
+
+    pub(crate) fn show_window(&mut self) -> Task<Message> {
+        self.ui.hidden = false;
+        Task::batch([
+            window::set_mode(self.main, window::Mode::Windowed),
+            window::minimize(self.main, false),
+            window::gain_focus(self.main),
+            window::request_user_attention(self.main, Some(window::UserAttention::Informational)),
+        ])
+    }
+
+    fn on_tray(&mut self, action: mosaic_platform::tray::TrayAction) -> Task<Message> {
+        use mosaic_platform::tray::TrayAction as T;
+        match action {
+            T::Open => self.show_window(),
+            T::Toggle => self.player_input(PlayerInput::Toggle),
+            T::Next => self.player_input(PlayerInput::Next),
+            T::Previous => self.player_input(PlayerInput::Prev),
+            T::Quit => self.quit(),
+        }
+    }
+
+    fn on_instance(&mut self, line: &str) -> Task<Message> {
+        match mosaic_platform::single_instance::parse_open(line) {
+            Some(path) => {
+                Task::batch([self.show_window(), self.open_files(vec![path.to_string()])])
+            }
+            None => self.show_window(),
+        }
+    }
+
+    /// Adds files or folders as sources and plays the first track found.
+    pub(crate) fn open_files(&mut self, paths: Vec<String>) -> Task<Message> {
+        let services = self.services.clone();
+        self.store.add_sources(&paths);
+        self.touch();
+        let sources = self.store.sources.clone();
+        self.ui.local.scanning = true;
+        Task::perform(
+            async move {
+                services
+                    .scan_paths(&sources)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |r| match r {
+                Ok(tracks) => Message::Opened(tracks, paths.clone()),
+                Err(e) => Message::Scanned(Err(e)),
+            },
+        )
+    }
+
     fn update_media(&mut self, state: &crate::player::MediaState) {
         let Some(media) = &mut self.media else { return };
         let id = state.track.as_ref().map(|t| t.id.clone());
@@ -649,6 +726,16 @@ impl App {
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
             Message::Nop => Task::none(),
+            Message::Settings(msg) => self.on_settings(msg),
+            Message::Onboarding(msg) => self.on_onboarding(msg),
+            Message::UpdateTimer => Task::batch([
+                self.check_update(),
+                Task::perform(tokio::time::sleep(mosaic_services::update::RECHECK), |()| {
+                    Message::UpdateTimer
+                }),
+            ]),
+            Message::External(External::Tray(action)) => self.on_tray(action),
+            Message::External(External::Instance(line)) => self.on_instance(&line),
             Message::Spotify(msg) => self.on_spotify(msg),
             Message::Import(msg) => self.on_import(msg),
             Message::Lyrics(msg) => self.on_lyrics(msg),
@@ -708,6 +795,21 @@ impl App {
                 self.cursor = p;
                 self.reorder_moved();
                 Task::none()
+            }
+            Message::Opened(tracks, paths) => {
+                let first = tracks
+                    .iter()
+                    .find(|t| {
+                        self.services
+                            .local_path(&t.id)
+                            .is_some_and(|p| paths.iter().any(|q| p.starts_with(q)))
+                    })
+                    .cloned();
+                let task = self.handle(Message::Scanned(Ok(tracks)));
+                match first {
+                    Some(t) => Task::batch([task, self.player_input(PlayerInput::Play(t, None))]),
+                    None => task,
+                }
             }
             Message::Scanned(result) => {
                 self.ui.local.scanning = false;
@@ -787,9 +889,11 @@ impl App {
                 Task::none()
             }
             Message::CloseRequested(_) => {
-                let _ = self.saver.flush(&self.store);
-                self.discord.shutdown();
-                iced::exit()
+                if self.tray.is_some() && self.services.config().close_to_tray() {
+                    self.ui.hidden = true;
+                    return window::set_mode(self.main, window::Mode::Hidden);
+                }
+                self.quit()
             }
             Message::DragWindow => window::drag(self.main),
             Message::Minimize => window::minimize(self.main, true),
@@ -1047,7 +1151,9 @@ impl App {
 
     pub fn view(&self, _: window::Id) -> Element<'_, Message> {
         let p = self.palette();
-        let mut layers = if self.ui.mini {
+        let mut layers = if let Some(o) = &self.ui.onboarding {
+            stack![self.onboarding_view(o, p), self.titlebar(p)]
+        } else if self.ui.mini {
             stack![self.mini_view(p), self.titlebar(p)]
         } else {
             let mut base = stack![self.ambient_view(p), self.shell(p)];
@@ -1252,9 +1358,7 @@ impl App {
             View::Local => self.local_view(p),
             View::Queue => self.queue_view(p),
             View::Spotify => self.spotify_view(p),
-            other => container(text(other.label()).size(28).color(p.on_surface))
-                .padding([32, 40])
-                .into(),
+            View::Settings => self.settings_view(p),
         };
         let main = container(content)
             .width(Length::Fill)

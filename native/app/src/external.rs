@@ -9,6 +9,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub enum External {
     Engine(mosaic_audio::Event),
     Media(mosaic_platform::media_controls::MediaCommand),
+    Tray(mosaic_platform::tray::TrayAction),
+    /// A line from another launch (`focus` or `open <path>`).
+    Instance(String),
 }
 
 static SENDER: OnceLock<UnboundedSender<External>> = OnceLock::new();

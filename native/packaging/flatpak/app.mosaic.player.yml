@@ -1,0 +1,42 @@
+# Build with:
+#   python3 flatpak-cargo-generator.py native/Cargo.lock -o native/packaging/flatpak/cargo-sources.json
+#   flatpak-builder --user --install --force-clean build-dir native/packaging/flatpak/app.mosaic.player.yml
+# flatpak-cargo-generator.py comes from https://github.com/flatpak/flatpak-builder-tools (cargo/).
+app-id: app.mosaic.player
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: mosaic
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=xdg-music:ro
+  - --own-name=org.mpris.MediaPlayer2.mosaic
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/app/com.discordapp.Discord
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/mosaic/cargo
+modules:
+  - name: mosaic
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path native/Cargo.toml --verbose
+      - cargo --offline build --release --manifest-path native/Cargo.toml -p mosaic --verbose
+      - install -Dm755 native/target/release/mosaic /app/bin/mosaic
+      - install -Dm644 native/packaging/linux/app.mosaic.player.desktop /app/share/applications/app.mosaic.player.desktop
+      - install -Dm644 native/packaging/linux/app.mosaic.player.metainfo.xml /app/share/metainfo/app.mosaic.player.metainfo.xml
+      - install -Dm644 native/assets/icon.svg /app/share/icons/hicolor/scalable/apps/app.mosaic.player.svg
+      - install -Dm644 native/assets/icon.png /app/share/icons/hicolor/512x512/apps/app.mosaic.player.png
+    sources:
+      - type: dir
+        path: ../../..
+      - cargo-sources.json

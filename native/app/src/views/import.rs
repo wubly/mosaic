@@ -173,7 +173,11 @@ impl App {
                     }
                     None => {
                         if self.ui.import.done() == self.ui.import.results.len() {
-                            self.ui.import.step = Step::Review;
+                            if self.ui.onboarding.is_some() {
+                                self.onboarding_collect_import();
+                            } else {
+                                self.ui.import.step = Step::Review;
+                            }
                         }
                         Task::none()
                     }

@@ -5,5 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+interprocess = "2.4.9"
 open = "5.4.5"
 souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = "0.26.1"

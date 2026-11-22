@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.mosaic.player</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Mosaic</name>
+  <summary>SoundCloud and your own music in one player</summary>
+  <description>
+    <p>Mosaic is a music player that puts SoundCloud and the files on your computer side by side. It has synced, word-by-word lyrics, crossfade, an equalizer, playlists and listening stats, and it takes its colours from the artwork of the song that is playing.</p>
+    <p>Optional beta features add Spotify browsing, playlist import and (with Premium) Spotify playback.</p>
+  </description>
+  <launchable type="desktop-id">app.mosaic.player.desktop</launchable>
+  <provides>
+    <binary>mosaic</binary>
+  </provides>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/wubly/mosaic/main/docs/screenshots/discover.webp</image>
+      <caption>Discover</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/wubly/mosaic/main/docs/screenshots/now-playing.webp</image>
+      <caption>Now Playing with word-synced lyrics</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/wubly/mosaic/main/docs/screenshots/library.webp</image>
+      <caption>Library</caption>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <url type="homepage">https://github.com/wubly/mosaic</url>
+  <releases>
+    <release version="0.5.0" date="2026-11-22" />
+  </releases>
+</component>

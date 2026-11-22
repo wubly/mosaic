@@ -39,6 +39,24 @@ fn main() -> anyhow::Result<()> {
         return debug_cli::run(dirs, cmd);
     }
 
+    let messages: Vec<String> = if args.files.is_empty() {
+        vec![mosaic_platform::single_instance::FOCUS.to_string()]
+    } else {
+        args.files
+            .iter()
+            .map(|f| mosaic_platform::single_instance::open_message(&f.to_string_lossy()))
+            .collect()
+    };
+    match mosaic_platform::single_instance::acquire(&messages) {
+        Ok(mosaic_platform::single_instance::Instance::Secondary) => return Ok(()),
+        Ok(mosaic_platform::single_instance::Instance::Primary(listener)) => {
+            mosaic_platform::single_instance::serve(listener, |m| {
+                let _ = external::sender().send(external::External::Instance(m));
+            });
+        }
+        Err(_) => {}
+    }
+
     let _ = migrate_legacy(&dirs);
     let config = Arc::new(Mutex::new(load_config(&dirs)));
     let store = load_store(&dirs);
@@ -62,6 +80,7 @@ fn main() -> anyhow::Result<()> {
         let _ = external::sender().send(external::External::Media(cmd));
     })
     .ok();
+    let tray = start_tray();
     if let Ok(mut flags) = FLAGS.lock() {
         *flags = Some(Flags {
             dirs,
@@ -71,6 +90,8 @@ fn main() -> anyhow::Result<()> {
             engine,
             engine_error,
             media,
+            tray,
+            files: args.files,
             debug_theme: args.debug_theme,
             debug_screenshot: args.debug_screenshot,
             debug_view: args.debug_view,
@@ -88,4 +109,23 @@ fn main() -> anyhow::Result<()> {
         .subscription(App::subscription)
         .run()?;
     Ok(())
+}
+
+fn start_tray() -> Option<mosaic_platform::tray::Tray> {
+    let png = image::load_from_memory(include_bytes!("../../assets/icon.png")).ok()?;
+    let rgba = png
+        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let icon = mosaic_platform::tray::TrayIcon {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    };
+    mosaic_platform::tray::start(
+        &icon,
+        std::sync::Arc::new(|action| {
+            let _ = external::sender().send(external::External::Tray(action));
+        }),
+    )
+    .ok()
 }

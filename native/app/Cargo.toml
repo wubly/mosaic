@@ -25,3 +25,16 @@ unicode-normalization = "0.1.26"
 default = ["debug-cli", "spotify"]
 debug-cli = []
 spotify = ["mosaic-services/spotify"]
+
+[package.metadata.packager]
+product-name = "Mosaic"
+identifier = "app.mosaic.player"
+binaries = [{ path = "mosaic", main = true }]
+icons = ["../assets/icon.png", "../assets/icon.ico"]
+formats = ["appimage", "deb", "nsis", "dmg"]
+description = "SoundCloud and your own music in one player"
+category = "Music"
+
+[package.metadata.packager.deb]
+depends = ["libasound2"]
+desktop-template = "../packaging/linux/app.mosaic.player.desktop"
