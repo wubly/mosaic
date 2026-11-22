@@ -131,6 +131,8 @@ enum Action {
     Seek(u32),
     /// The loaded track ended (or Soloist moved on): finish the source and stop autoplay.
     Finish,
+    /// Our track already finished and Soloist has since started another one by itself.
+    Follow,
     Fail(String),
 }
 
@@ -216,6 +218,9 @@ fn queue_uris(ev: &Value) -> Vec<String> {
     out
 }
 
+/// `Target::moved`: tells Mosaic which track Soloist moved on to.
+type MovedFn = Arc<dyn Fn(String) + Send + Sync>;
+
 /// Playback state mirrored from Soloist's events, plus the track Mosaic asked for.
 struct Tracker {
     logged_in: bool,
@@ -236,6 +241,9 @@ struct Tracker {
     volume: Option<u8>,
     /// Soloist's own up-next list (track URIs), from the last `queue_changed`.
     queue: Vec<String>,
+    /// After our track finished without Soloist naming a successor yet (it went idle or was
+    /// still between tracks): the finished URI and whom to tell once another track plays.
+    follow: Option<(String, MovedFn)>,
 }
 
 impl Default for Tracker {
@@ -259,6 +267,7 @@ impl Default for Tracker {
             fed: 0.0,
             volume: None,
             queue: Vec::new(),
+            follow: None,
         }
     }
 }
@@ -363,7 +372,12 @@ impl Tracker {
 
     fn check_track(&mut self) -> Action {
         let Some(want) = self.want.clone() else {
-            return Action::None;
+            return match &self.follow {
+                Some((from, _)) if self.playing() && self.successor_of(from).is_some() => {
+                    Action::Follow
+                }
+                _ => Action::None,
+            };
         };
         let ours = self.uri.as_deref() == Some(want.as_str());
         if !self.started {
@@ -385,6 +399,7 @@ impl Tracker {
     /// (it moved on to it by itself) is adopted where it is instead of restarted.
     fn begin(&mut self, uri: &str, start_ms: u32, target: Target) -> u64 {
         self.gen += 1;
+        self.follow = None;
         self.want = Some(uri.to_string());
         self.target = Some(target);
         let adopted = self.uri.as_deref() == Some(uri) && self.playing() && start_ms == 0;
@@ -396,6 +411,28 @@ impl Tracker {
             f64::from(start_ms) / 1000.0
         };
         self.gen
+    }
+
+    /// The track Soloist is on, if it's a different one than `from`.
+    fn successor_of(&self, from: &str) -> Option<String> {
+        self.uri
+            .clone()
+            .filter(|u| u != from && u.starts_with("spotify:track:"))
+    }
+
+    /// Our track finished: hands back its target and the track Soloist moved on to, if it's
+    /// already on one (whatever its status: it may still be buffering). Otherwise remembers to
+    /// report the next track that plays.
+    fn finish(&mut self) -> Option<(Target, Option<String>)> {
+        let from = self.want.clone()?;
+        let target = self.clear()?;
+        let moved = (self.status != "idle")
+            .then(|| self.successor_of(&from))
+            .flatten();
+        if moved.is_none() {
+            self.follow = Some((from, Arc::clone(&target.moved)));
+        }
+        Some((target, moved))
     }
 
     fn clear(&mut self) -> Option<Target> {
@@ -584,7 +621,10 @@ impl Soloist {
     }
 
     pub fn stop(&self) {
-        self.with(|t| t.clear());
+        self.with(|t| {
+            t.follow = None;
+            t.clear()
+        });
         self.pause();
     }
 
@@ -605,13 +645,19 @@ impl Soloist {
                 seek["position_ms"] = json!(ms);
                 self.send(seek);
             }
-            Action::Finish => {
-                let done = self
+            Action::Follow => {
+                let follow = self
                     .with(|t| {
-                        let moved = t.uri.clone().filter(|_| t.playing());
-                        t.clear().map(|target| (target, moved))
+                        let (from, moved) = t.follow.take()?;
+                        t.successor_of(&from).map(|uri| (uri, moved))
                     })
                     .flatten();
+                if let Some((uri, moved)) = follow {
+                    moved(uri);
+                }
+            }
+            Action::Finish => {
+                let done = self.with(Tracker::finish).flatten();
                 if let Some((target, moved)) = done {
                     // Soloist carried on by itself (autoplay, or someone skipped from another
                     // device). It keeps playing; Mosaic either adopts that track or loads the
@@ -906,6 +952,38 @@ mod tests {
         assert!(t.started);
         let next = json!({ "type": "track_changed", "item": { "uri": "spotify:track:autoplay" } });
         assert_eq!(t.on_event(&next), Action::Finish);
+    }
+
+    #[test]
+    fn a_move_is_reported_even_while_the_next_track_is_still_buffering() {
+        let mut t = Tracker::default();
+        t.begin("spotify:track:a", 0, target(Arc::default()));
+        t.on_event(&playing("spotify:track:a"));
+        let next = json!({ "type": "playback_state", "status": "buffering",
+                           "item": { "uri": "spotify:track:b" } });
+        assert_eq!(t.on_event(&next), Action::Finish);
+        let (_, moved) = t.finish().unwrap();
+        assert_eq!(moved.as_deref(), Some("spotify:track:b"));
+        assert!(t.follow.is_none());
+    }
+
+    #[test]
+    fn after_going_idle_the_next_track_soloist_plays_is_followed_once() {
+        let mut t = Tracker::default();
+        t.begin("spotify:track:a", 0, target(Arc::default()));
+        t.on_event(&playing("spotify:track:a"));
+        let idle = json!({ "type": "playback_changed", "status": "idle" });
+        assert_eq!(t.on_event(&idle), Action::Finish);
+        let (_, moved) = t.finish().unwrap();
+        assert_eq!(moved, None, "nothing to follow yet");
+        assert_eq!(t.on_event(&playing("spotify:track:a")), Action::None);
+        assert_eq!(t.on_event(&playing("spotify:track:b")), Action::Follow);
+        t.follow = None;
+        assert_eq!(t.on_event(&playing("spotify:track:c")), Action::None);
+        // A new load from Mosaic drops anything left to follow.
+        t.follow = Some(("spotify:track:c".into(), Arc::new(|_| {})));
+        t.begin("spotify:track:d", 0, target(Arc::default()));
+        assert!(t.follow.is_none());
     }
 
     #[test]

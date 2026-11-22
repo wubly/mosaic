@@ -617,7 +617,10 @@ impl App {
                 Some(t) => {
                     self.player_input(crate::player::PlayerInput::AdoptSpotify { from, track: *t })
                 }
-                None => Task::none(),
+                None => {
+                    tracing::warn!("spotify: couldn't look up the track Soloist moved on to");
+                    Task::none()
+                }
             },
             Msg::Created(result) => match result {
                 Ok(card) => {

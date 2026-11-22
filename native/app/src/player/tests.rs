@@ -1039,3 +1039,46 @@ fn tick_is_only_wanted_when_something_depends_on_it() {
     h.send(PlayerInput::SetSleep(SleepRequest::Minutes(5)));
     assert!(h.c.wants_tick());
 }
+
+fn spotify(id: u64) -> Track {
+    let mut t = track(id, "spotify", 200);
+    t.uri = Some(format!("spotify:track:{id}"));
+    t
+}
+
+#[test]
+fn spotify_moving_on_after_the_track_ended_is_followed() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    h.ended();
+    assert!(!h.c.playing);
+    let fx = h.send(PlayerInput::AdoptSpotify {
+        from: "spotify:track:1".into(),
+        track: spotify(2),
+    });
+    assert_eq!(
+        resolves(&fx),
+        [2],
+        "the player loads what Spotify is playing"
+    );
+    assert_eq!(
+        h.c.queue.current().map(|t| t.title.as_str()),
+        Some("song 2")
+    );
+}
+
+#[test]
+fn spotify_moving_on_is_ignored_when_mosaic_has_a_next_track() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let (a, b) = (spotify(1), spotify(3));
+    h.start(&a, &[a.clone(), b]);
+    let fx = h.send(PlayerInput::AdoptSpotify {
+        from: "spotify:track:1".into(),
+        track: spotify(2),
+    });
+    assert!(resolves(&fx).is_empty());
+    assert_eq!(h.c.queue.list.len(), 2);
+}
