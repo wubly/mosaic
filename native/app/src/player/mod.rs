@@ -89,6 +89,7 @@ pub enum Effect {
     ResolveStream {
         track: Track,
         gen: u64,
+        seek_to: f64,
     },
     FetchRelated {
         seed: Track,
@@ -590,7 +591,7 @@ impl PlayerController {
                 return self.load(&track, opts, true, now, fx);
             }
         }
-        self.error = if message.contains("ffmpeg") {
+        self.error = if message.contains("ffmpeg") || message.contains("Spotify") {
             message.to_string()
         } else {
             "Playback failed".into()

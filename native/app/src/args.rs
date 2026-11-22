@@ -8,6 +8,7 @@ pub struct Args {
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<PathBuf>,
     pub debug_view: Option<String>,
+    pub debug_import: Option<String>,
     pub debug_cmd: Option<Vec<String>>,
     pub files: Vec<PathBuf>,
 }
@@ -22,6 +23,7 @@ impl Args {
                 "--reset-window" => out.reset_window = true,
                 "--debug-screenshot" => out.debug_screenshot = it.next().map(PathBuf::from),
                 "--debug-view" => out.debug_view = it.next(),
+                "--debug-import" => out.debug_import = it.next(),
                 "--debug-theme" => out.debug_theme = it.next(),
                 "--data-dir" => out.data_dir = it.next().map(PathBuf::from),
                 "--debug-cmd" => {

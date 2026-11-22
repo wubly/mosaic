@@ -140,6 +140,7 @@ impl App {
                     self.ui.discover.error.clear();
                 } else if trimmed.is_empty() {
                     self.ui.discover.results.clear();
+                    self.ui.spotify.search = Default::default();
                     self.ui.discover.busy = false;
                     return Task::none();
                 }
@@ -208,10 +209,12 @@ impl App {
         self.ui.discover.busy = true;
         self.ui.discover.error.clear();
         let services = self.services.clone();
-        Task::perform(
+        let spotify = self.search_spotify(q.clone(), seq);
+        let sc = Task::perform(
             async move { services.sc_search(&q, 30).await.map_err(|e| e.to_string()) },
             move |r| Message::Discover(Msg::Results(seq, r)),
-        )
+        );
+        Task::batch([sc, spotify])
     }
 
     /// Opens Discover with a search term (command palette, `/`).
@@ -421,6 +424,11 @@ impl App {
                     ListRef::Recent,
                     p,
                 ));
+            }
+            if !self.ui.spotify.saved.is_empty() {
+                body = body
+                    .push(h3("Your Spotify likes (beta)".into()))
+                    .push(self.tile_shelf(&self.ui.spotify.saved, ListRef::SpotifySaved, p));
             }
             let chips = iced::widget::Row::with_children(GENRES.iter().map(|(g, label)| {
                 button(container(text(*label).size(14)).center_y(Length::Fill))

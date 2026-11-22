@@ -23,6 +23,7 @@ pub(crate) struct Inner {
     pub local_paths: Mutex<HashMap<TrackId, PathBuf>>,
     pub lyrics: lyrics::State,
     pub images: images::State,
+    pub spotify: spotify::auth::State,
 }
 
 #[derive(Clone)]
@@ -40,6 +41,7 @@ impl Services {
         Ok(Services {
             inner: Arc::new(Inner {
                 http: http::build_client()?,
+                spotify: spotify::auth::State::load(&dirs),
                 dirs,
                 config,
                 sc_client_id: Mutex::new(sc_client_id.filter(|s| !s.is_empty())),

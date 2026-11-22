@@ -6,20 +6,27 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 discord-rich-presence = "1.1.0"
 futures = "0.3.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
+librespot-metadata = { version = "0.8.0", default-features = false, optional = true }
+librespot-oauth = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
+librespot-playback = { version = "0.8.0", default-features = false, optional = true }
 lofty = "0.25.5"
 lru = "0.19.1"
 mosaic-core = { version = "0.5.0", path = "../core" }
 percent-encoding = "2.3.2"
+rand = "0.10.4"
 regex = "1.13.2"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "gzip", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "gzip", "rustls", "form", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha1 = "0.11.0"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util"] }
 tracing = "0.1.44"
 unicode-normalization = "0.1.26"
 url = "2.5.9"
@@ -29,3 +36,7 @@ walkdir = "2.5.1"
 mosaic-core = { path = "../core" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "macros"] }
+
+[features]
+default = ["spotify"]
+spotify = ["dep:librespot-core", "dep:librespot-playback", "dep:librespot-metadata", "dep:librespot-oauth"]

@@ -26,6 +26,9 @@ pub enum ListRef {
     History,
     Local,
     Playlist(String),
+    SpotifyPage,
+    SpotifySearch,
+    SpotifySaved,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +58,8 @@ pub enum MenuAction {
     Radio,
     OpenExternal,
     CopyLink,
+    GoArtist,
+    GoAlbum,
 }
 
 pub struct MenuState {
@@ -87,6 +92,9 @@ impl App {
             ListRef::Likes => self.store.likes.clone(),
             ListRef::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
             ListRef::Local => self.ui.local.tracks.clone(),
+            ListRef::SpotifyPage => self.spotify_page_tracks(),
+            ListRef::SpotifySearch => self.ui.spotify.search.tracks.clone(),
+            ListRef::SpotifySaved => self.ui.spotify.saved.clone(),
             ListRef::Playlist(id) => self
                 .store
                 .playlists
@@ -670,6 +678,14 @@ impl App {
                 self.toast("Link copied");
                 iced::clipboard::write(t.permalink.unwrap_or_default())
             }
+            MenuAction::GoArtist => match t.artist_id {
+                Some(id) => self.spotify_go(super::spotify::Route::Artist(id)),
+                None => Task::none(),
+            },
+            MenuAction::GoAlbum => match t.album_id {
+                Some(id) => self.spotify_go(super::spotify::Route::Album(id)),
+                None => Task::none(),
+            },
             MenuAction::Submenu => Task::none(),
         }
     }

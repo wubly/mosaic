@@ -6,7 +6,11 @@ use mosaic_services::Services;
 use crate::player::Stream;
 
 /// Turns a track into something the engine can open. Errors are user-facing messages.
-pub async fn resolve_stream(services: &Services, track: &Track) -> Result<Stream, String> {
+pub async fn resolve_stream(
+    services: &Services,
+    track: &Track,
+    seek_to: f64,
+) -> Result<Stream, String> {
     match track.source {
         Source::Local => {
             let path = services
@@ -33,6 +37,39 @@ pub async fn resolve_stream(services: &Services, track: &Track) -> Result<Stream
                 silence: info.silence,
             })
         }
+        #[cfg(feature = "spotify")]
+        Source::Spotify => spotify(services, track, seek_to).await,
         _ => Err("Could not play this track".into()),
     }
+}
+
+#[cfg(feature = "spotify")]
+async fn spotify(services: &Services, track: &Track, seek_to: f64) -> Result<Stream, String> {
+    use std::sync::Arc;
+
+    use mosaic_services::spotify::playback::Target;
+
+    let uri = track.uri.clone().ok_or("Could not play this track")?;
+    let playback = services
+        .spotify_playback()
+        .await
+        .map_err(|e| e.to_string())?;
+    let seeker = playback.clone();
+    let duration = (track.duration > 0).then(|| track.duration as f64 / 1000.0);
+    let (producer, handle) = mosaic_audio::push_pair(seek_to, duration, move |secs| {
+        seeker.seek((secs.max(0.0) * 1000.0) as u32);
+    });
+    let (writer, finisher, failer) = (producer.clone(), producer.clone(), producer);
+    let target = Target {
+        write: Arc::new(move |samples| writer.write(samples)),
+        finish: Arc::new(move || finisher.finish()),
+        fail: Arc::new(move |message| failer.fail(message)),
+    };
+    playback
+        .load(&uri, (seek_to.max(0.0) * 1000.0) as u32, target)
+        .map_err(|e| e.to_string())?;
+    Ok(Stream {
+        source: SourceSpec::Push(handle),
+        silence: None,
+    })
 }

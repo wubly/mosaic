@@ -42,6 +42,7 @@ pub struct Flags {
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<std::path::PathBuf>,
     pub debug_view: Option<String>,
+    pub debug_import: Option<String>,
 }
 
 pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
@@ -51,6 +52,8 @@ pub static FLAGS: Mutex<Option<Flags>> = Mutex::new(None);
 pub enum Message {
     Player(PlayerInput),
     Nop,
+    Spotify(crate::views::spotify::Msg),
+    Import(crate::views::import::Msg),
     Lyrics(crate::views::lyrics::Msg),
     CloseNowPlaying,
     Library(crate::views::library::Msg),
@@ -122,6 +125,8 @@ pub(crate) struct Ui {
     pub(crate) menu: Option<crate::views::track::MenuState>,
     pub(crate) palette: crate::views::palette::State,
     pub(crate) importing: bool,
+    pub(crate) spotify: crate::views::spotify::State,
+    pub(crate) import: crate::views::import::State,
     pub(crate) lyrics: crate::views::lyrics::State,
     pub(crate) library: crate::views::library::State,
     pub(crate) local: crate::views::local::State,
@@ -245,20 +250,32 @@ impl App {
         }
         app.retarget_rail();
         app.refresh_recent();
-        let mut tasks = vec![open.discard(), app.discover_boot(), app.scan()];
+        let mut tasks = vec![
+            open.discard(),
+            app.discover_boot(),
+            app.scan(),
+            app.spotify_boot(),
+        ];
         let fx = app.player.sync_engine();
         tasks.push(app.run_effects(fx));
         if let Some(session) = app.store.session.clone() {
             tasks.push(app.player_input(PlayerInput::Restore(session)));
+        }
+        if let Some(url) = flags.debug_import.clone() {
+            app.ui.importing = true;
+            app.ui.import.url = url;
+            tasks.push(app.on_import(crate::views::import::Msg::Start));
         }
         if flags.debug_view.as_deref() == Some("mini") {
             tasks.push(app.toggle_mini());
         }
         if app.debug_screenshot.is_some() {
             tasks.push(
-                Task::future(tokio::time::sleep(Duration::from_secs(8)))
-                    .then(move |_| window::screenshot(main))
-                    .map(Message::Screenshot),
+                Task::future(tokio::time::sleep(Duration::from_secs(
+                    if flags.debug_import.is_some() { 25 } else { 8 },
+                )))
+                .then(move |_| window::screenshot(main))
+                .map(Message::Screenshot),
             );
         }
         if let Some(url) = flags.debug_theme {
@@ -285,7 +302,7 @@ impl App {
     }
 
     pub(crate) fn retarget_rail(&mut self) {
-        let y = rail::pill_y(self.view_kind(), false, self.rail_height());
+        let y = rail::pill_y(self.view_kind(), self.spotify_enabled(), self.rail_height());
         self.anim.spring("rail-pill", y, 500.0, 36.0);
     }
 
@@ -313,8 +330,17 @@ impl App {
 
     pub(crate) fn player_input(&mut self, input: PlayerInput) -> Task<Message> {
         let before = self.player.track.as_ref().map(|t| t.id.clone());
+        let was_playing = self.player.playing;
+        let was_spotify = self
+            .player
+            .track
+            .as_ref()
+            .is_some_and(|t| t.source == mosaic_core::model::Source::Spotify);
         let fx = self.player.handle(input, Instant::now());
-        let task = self.run_effects(fx);
+        let task = Task::batch([
+            self.run_effects(fx),
+            self.sync_spotify(was_playing, was_spotify),
+        ]);
         let after = self.player.track.as_ref().map(|t| t.id.clone());
         let busy = self.player.playing && !self.player.loading;
         let now = Instant::now();
@@ -335,6 +361,42 @@ impl App {
             return Task::batch([task, self.track_changed(), self.fetch_lyrics()]);
         }
         task
+    }
+
+    /// Keeps librespot's play state in step with the deck.
+    fn sync_spotify(&mut self, was_playing: bool, was_spotify: bool) -> Task<Message> {
+        #[cfg(feature = "spotify")]
+        {
+            let is_spotify = self
+                .player
+                .track
+                .as_ref()
+                .is_some_and(|t| t.source == mosaic_core::model::Source::Spotify);
+            let playing = self.player.playing;
+            let action = if was_spotify && !is_spotify {
+                Some(0)
+            } else if is_spotify && playing != was_playing {
+                Some(if playing { 1 } else { 2 })
+            } else {
+                None
+            };
+            if let Some(action) = action {
+                let services = self.services.clone();
+                return Task::future(async move {
+                    if let Ok(pb) = services.spotify_playback().await {
+                        match action {
+                            0 => pb.stop(),
+                            1 => pb.resume(),
+                            _ => pb.pause(),
+                        }
+                    }
+                })
+                .discard();
+            }
+        }
+        #[cfg(not(feature = "spotify"))]
+        let _ = (was_playing, was_spotify);
+        Task::none()
     }
 
     fn track_changed(&mut self) -> Task<Message> {
@@ -409,10 +471,14 @@ impl App {
                         engine.send(cmd);
                     }
                 }
-                Effect::ResolveStream { track, gen } => {
+                Effect::ResolveStream {
+                    track,
+                    gen,
+                    seek_to,
+                } => {
                     let services = self.services.clone();
                     tasks.push(Task::perform(
-                        async move { resolve_stream(&services, &track).await },
+                        async move { resolve_stream(&services, &track, seek_to).await },
                         move |result| Message::Player(PlayerInput::StreamResolved { gen, result }),
                     ));
                 }
@@ -583,6 +649,8 @@ impl App {
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
             Message::Nop => Task::none(),
+            Message::Spotify(msg) => self.on_spotify(msg),
+            Message::Import(msg) => self.on_import(msg),
             Message::Lyrics(msg) => self.on_lyrics(msg),
             Message::CloseNowPlaying => {
                 self.ui.now_playing = false;
@@ -856,6 +924,9 @@ impl App {
             if self.ui.lyrics.picker.take().is_some() {
                 return Task::none();
             }
+            if self.ui.importing {
+                return self.on_import(crate::views::import::Msg::Close);
+            }
             self.ui.tune = None;
             self.ui.menu = None;
             self.ui.now_playing = false;
@@ -993,6 +1064,9 @@ impl App {
             .iter()
             .map(|t| (t.id, t.message.clone()))
             .collect();
+        if self.ui.importing {
+            layers = layers.push(self.import_view(p));
+        }
         if self.ui.drop_hover {
             layers = layers.push(self.drop_veil(p));
         }
@@ -1167,7 +1241,7 @@ impl App {
         let nav = rail::view(
             current,
             self.player.queue.list.len(),
-            false,
+            self.spotify_enabled(),
             self.anim.value("rail-pill", 0.0),
             p,
             Message::Nav,
@@ -1177,6 +1251,7 @@ impl App {
             View::Library | View::Playlists => self.library_view(p),
             View::Local => self.local_view(p),
             View::Queue => self.queue_view(p),
+            View::Spotify => self.spotify_view(p),
             other => container(text(other.label()).size(28).color(p.on_surface))
                 .padding([32, 40])
                 .into(),

@@ -14,6 +14,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 pub use dsp::analyser::{Analyser, BINS as ANALYSER_BINS};
 pub use output::OfflineRenderer;
+pub use source::push::{push_pair, PushHandle, PushProducer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum DeckId {
@@ -55,8 +56,14 @@ pub enum AfterFade {
 #[derive(Clone, Debug)]
 pub enum SourceSpec {
     File(PathBuf),
-    Http { url: String },
-    Hls { playlist_url: String },
+    Http {
+        url: String,
+    },
+    Hls {
+        playlist_url: String,
+    },
+    /// Audio written by another thread (Spotify).
+    Push(source::push::PushHandle),
 }
 
 #[derive(Clone, Debug)]

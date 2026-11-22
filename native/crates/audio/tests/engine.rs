@@ -294,3 +294,60 @@ fn speed_shortens_output_and_position_tracks_source_time() {
     assert!((last - 10.0).abs() < 0.6, "position {last}");
     assert!(rig.seen.iter().any(|e| matches!(e, Event::Ended { .. })));
 }
+
+#[test]
+fn push_source_plays_resampled_audio_and_ends_when_the_producer_finishes() {
+    use mosaic_audio::{push_pair, SourceSpec};
+
+    let (producer, handle) = push_pair(0.0, Some(2.0), |_| {});
+    let writer = std::thread::spawn(move || {
+        let rate = 44_100usize;
+        for chunk in 0..10 {
+            let mut block = Vec::with_capacity(rate / 5 * 2);
+            for i in 0..rate / 5 {
+                let n = chunk * (rate / 5) + i;
+                let s = 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / rate as f32).sin();
+                block.extend_from_slice(&[s, s]);
+            }
+            assert!(producer.write(block));
+        }
+        producer.finish();
+    });
+
+    let mut rig = Rig::new();
+    rig.engine.send(Command::Load {
+        deck: DeckId::A,
+        gen: 1,
+        source: SourceSpec::Push(handle),
+        start_at: 0.0,
+        autoplay: true,
+        fade_in_ms: 0,
+        duration_hint: Some(2.0),
+    });
+    rig.wait_for("playing", |e| matches!(e, Event::Playing { .. }));
+    let out = mono(&rig.render_secs(3.0));
+    writer.join().unwrap();
+
+    let active: Vec<usize> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.abs() > 0.02)
+        .map(|(i, _)| i)
+        .collect();
+    let secs = (active.last().unwrap() - active.first().unwrap()) as f32 / OUT_RATE as f32;
+    assert!((secs - 2.0).abs() < 0.05, "length {secs}");
+    let hz = peak_freq(
+        &out[OUT_RATE as usize / 2..OUT_RATE as usize],
+        950.0,
+        1050.0,
+    );
+    assert!((hz - 1000.0).abs() <= 2.0, "pitch {hz}");
+    rig.drain();
+    assert!(rig.seen.iter().any(|e| matches!(
+        e,
+        Event::Ended {
+            deck: DeckId::A,
+            ..
+        }
+    )));
+}

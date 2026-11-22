@@ -41,6 +41,7 @@ impl PlayerController {
         fx.push(Effect::ResolveStream {
             track: track.clone(),
             gen: self.gen,
+            seek_to: opts.seek_to,
         });
     }
 

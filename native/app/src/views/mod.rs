@@ -1,5 +1,6 @@
 pub mod common;
 pub mod discover;
+pub mod import;
 pub mod library;
 pub mod local;
 pub mod lyrics;
@@ -8,6 +9,7 @@ pub mod palette;
 pub mod player_bar;
 pub mod queue;
 pub mod reorder;
+pub mod spotify;
 pub mod track;
 pub mod tune;
 

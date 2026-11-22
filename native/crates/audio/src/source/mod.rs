@@ -2,6 +2,7 @@ pub mod ffmpeg;
 pub mod file;
 pub mod hls;
 pub mod http;
+pub mod push;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -40,5 +41,6 @@ pub fn open(spec: &SourceSpec, ctx: &SourceCtx) -> Result<Box<dyn AudioStream>, 
         SourceSpec::File(path) => file::open(path, ctx),
         SourceSpec::Http { url } => http::open(url, ctx),
         SourceSpec::Hls { playlist_url } => hls::open(playlist_url, ctx),
+        SourceSpec::Push(handle) => push::open(handle, ctx),
     }
 }

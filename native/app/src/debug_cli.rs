@@ -201,12 +201,16 @@ async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
         for effect in controller.handle(input, Instant::now()) {
             match effect {
                 Effect::Engine(c) => engine.send(c),
-                Effect::ResolveStream { track, gen } => {
+                Effect::ResolveStream {
+                    track,
+                    gen,
+                    seek_to,
+                } => {
                     outstanding += 1;
                     done = false;
                     let (services, tx) = (services.clone(), tx.clone());
                     tokio::spawn(async move {
-                        let result = resolve_stream(&services, &track).await;
+                        let result = resolve_stream(&services, &track, seek_to).await;
                         let _ = tx.send(PlayerInput::StreamResolved { gen, result });
                     });
                 }
