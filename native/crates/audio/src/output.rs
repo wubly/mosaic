@@ -7,6 +7,9 @@ use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 use rtrb::Producer;
 
 use crate::deck::{CbEvent, DeckPlayer};
+use crate::dsp::analyser::AnalyserTap;
+use crate::dsp::compressor::Compressor;
+use crate::dsp::eq::Eq;
 
 const MAX_FRAMES: usize = 4096;
 const VOLUME_SMOOTHING_SECS: f32 = 0.010;
@@ -16,6 +19,8 @@ pub struct MixerParams {
     pub volume: AtomicU32,
     pub speed: AtomicU32,
     pub rendered: AtomicU64,
+    pub eq_gains: [AtomicU32; 5],
+    pub leveling: AtomicBool,
 }
 
 impl MixerParams {
@@ -24,6 +29,8 @@ impl MixerParams {
             volume: AtomicU32::new(1.0f32.to_bits()),
             speed: AtomicU32::new(1.0f32.to_bits()),
             rendered: AtomicU64::new(0),
+            eq_gains: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            leveling: AtomicBool::new(false),
         }
     }
 
@@ -34,6 +41,17 @@ impl MixerParams {
 
     pub fn volume(&self) -> f32 {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
+
+    pub fn set_speed(&self, v: f32) {
+        self.speed
+            .store(v.clamp(0.5, 2.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_eq(&self, gains_db: [f32; 5]) {
+        for (slot, g) in self.eq_gains.iter().zip(gains_db) {
+            slot.store(g.clamp(-24.0, 24.0).to_bits(), Ordering::Relaxed);
+        }
     }
 
     pub fn speed(&self) -> f32 {
@@ -48,6 +66,9 @@ pub struct Mixer {
     params: Arc<MixerParams>,
     master: f32,
     blocking: bool,
+    eq: Eq,
+    compressor: Compressor,
+    tap: AnalyserTap,
 }
 
 impl Mixer {
@@ -56,6 +77,7 @@ impl Mixer {
         decks: [DeckPlayer; 2],
         events: Producer<CbEvent>,
         params: Arc<MixerParams>,
+        tap: AnalyserTap,
         blocking: bool,
     ) -> Mixer {
         let master = params.volume();
@@ -66,11 +88,16 @@ impl Mixer {
             params,
             master,
             blocking,
+            eq: Eq::new(rate),
+            compressor: Compressor::new(rate),
+            tap,
         }
     }
 
     pub fn set_rate(&mut self, rate: u32) {
         self.rate = rate;
+        self.eq.set_rate(rate);
+        self.compressor.set_rate(rate);
     }
 
     /// Renders `out.len() / 2` stereo frames.
@@ -81,6 +108,14 @@ impl Mixer {
             deck.mix(out, self.rate, speed, self.blocking, &mut self.events);
         }
 
+        let gains = std::array::from_fn(|i| {
+            f32::from_bits(self.params.eq_gains[i].load(Ordering::Relaxed))
+        });
+        self.eq.set_target(gains);
+        self.eq.process(out);
+        self.compressor
+            .process(out, self.params.leveling.load(Ordering::Relaxed));
+
         let target = self.params.volume();
         let coeff = 1.0 - (-1.0 / (VOLUME_SMOOTHING_SECS * self.rate as f32)).exp();
         for frame in out.as_chunks_mut::<2>().0.iter_mut() {
@@ -88,6 +123,7 @@ impl Mixer {
             frame[0] = (frame[0] * self.master).clamp(-1.0, 1.0);
             frame[1] = (frame[1] * self.master).clamp(-1.0, 1.0);
         }
+        self.tap.push(out);
         self.params
             .rendered
             .fetch_add((out.len() / 2) as u64, Ordering::Relaxed);

@@ -8,11 +8,17 @@ license.workspace = true
 anyhow = "1.0.104"
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
+m3u8-rs = "6.0.1"
+realfft = "3.5.1"
 rtrb = "0.4.1"
 rubato = "5.1.0"
+signalsmith-stretch = "0.1.3"
 symphonia = { version = "0.6.1", features = ["all-codecs", "all-formats"] }
+symphonia-opus = "0.1.3"
 thiserror = "2.0.21"
 tracing = "0.1.44"
+ureq = "3.5.2"
+url = "2.5.9"
 
 [dev-dependencies]
 hound = "3.5.1"

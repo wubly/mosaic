@@ -210,3 +210,87 @@ fn start_offset_begins_mid_track() {
     let out = mono(&rig.render_secs(0.5));
     assert!((peak_freq(&out[2400..], 400.0, 900.0) - 880.0).abs() <= 2.0);
 }
+
+#[test]
+fn eq_boosts_band_and_leaves_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let mid = write_wav(dir.path(), "m.wav", 48_000, &[(910.0, 3.0)], 0.1);
+    let low = write_wav(dir.path(), "l.wav", 48_000, &[(60.0, 3.0)], 0.1);
+
+    let level = |path: &std::path::Path, eq_on: bool| {
+        let mut rig = Rig::new();
+        rig.engine.send(Command::SetEq {
+            enabled: eq_on,
+            gains_db: [0.0, 0.0, 6.0, 0.0, 0.0],
+        });
+        rig.load(DeckId::A, path, 0.0, true, 0);
+        rig.wait_for("playing", |e| matches!(e, Event::Playing { .. }));
+        rig.render_secs(0.5);
+        rms(&mono(&rig.render_secs(1.0)))
+    };
+    let boost = db(level(&mid, true) / level(&mid, false));
+    assert!((boost - 6.0).abs() < 0.5, "boost {boost}");
+    assert!(db(level(&low, true) / level(&low, false)).abs() < 0.5);
+}
+
+#[test]
+fn leveling_compresses_loud_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let loud = write_wav(dir.path(), "loud.wav", 48_000, &[(440.0, 4.0)], 0.5);
+    let mut rig = Rig::new();
+    rig.engine.send(Command::SetLeveling(true));
+    rig.load(DeckId::A, &loud, 0.0, true, 0);
+    rig.wait_for("playing", |e| matches!(e, Event::Playing { .. }));
+    rig.render_secs(2.0);
+    let level = rms(&mono(&rig.render_secs(1.0)));
+    assert!(db(level / (0.5 / 2f32.sqrt())) < -8.0);
+}
+
+#[test]
+fn analyser_sees_the_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = write_wav(dir.path(), "t.wav", 48_000, &[(1000.0, 3.0)], 0.02);
+    let mut rig = Rig::new();
+    let mut analyser = rig.engine.analyser();
+    rig.load(DeckId::A, &wav, 0.0, true, 0);
+    rig.wait_for("playing", |e| matches!(e, Event::Playing { .. }));
+    let mut bins = [0u8; mosaic_audio::ANALYSER_BINS];
+    for _ in 0..30 {
+        rig.render_secs(0.02);
+        analyser.byte_frequency_data(&mut bins);
+    }
+    let peak = bins.iter().enumerate().max_by_key(|(_, v)| **v).unwrap().0;
+    assert!((10..=12).contains(&peak), "peak bin {peak}");
+}
+
+#[test]
+fn speed_shortens_output_and_position_tracks_source_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = write_wav(dir.path(), "s.wav", 48_000, &[(440.0, 10.0)], 0.5);
+    let mut rig = Rig::new();
+    rig.engine.send(Command::SetSpeed(1.5));
+    rig.load(DeckId::A, &wav, 0.0, true, 0);
+    rig.wait_for("playing", |e| matches!(e, Event::Playing { .. }));
+
+    let out = mono(&rig.render_secs(9.0));
+    let active = out.iter().rposition(|s| s.abs() > 0.02).unwrap();
+    let secs = active as f32 / OUT_RATE as f32;
+    assert!((secs - 6.67).abs() < 0.3, "output length {secs}");
+    let hz = peak_freq(&out[48_000..96_000], 400.0, 480.0);
+    assert!((hz - 440.0).abs() <= 2.0, "pitch {hz}");
+
+    rig.drain();
+    let last = rig
+        .seen
+        .iter()
+        .filter_map(|e| {
+            if let Event::Position { secs, .. } = e {
+                Some(*secs)
+            } else {
+                None
+            }
+        })
+        .fold(0.0f64, f64::max);
+    assert!((last - 10.0).abs() < 0.6, "position {last}");
+    assert!(rig.seen.iter().any(|e| matches!(e, Event::Ended { .. })));
+}

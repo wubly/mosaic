@@ -8,6 +8,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::deck::{CbEvent, DeckMsg, DeckPlayer, DeckShared, Marker, Rings};
 use crate::decode::{self, DecCmd, DecoderCtx, Internal};
+use crate::dsp::analyser::{analyser_pair, Analyser};
 use crate::output::{self, DeviceStream, Mixer, MixerParams, OfflineRenderer};
 use crate::{AfterFade, Command, Curve, DeckId, Engine, Event, Msg, SourceSpec};
 
@@ -54,21 +55,23 @@ struct Control {
     next_load_id: u64,
 }
 
+type Ready = (Option<OfflineRenderer>, Analyser);
+
 pub(crate) fn spawn(mode: Mode) -> anyhow::Result<(Engine, Option<OfflineRenderer>)> {
     let (tx, rx) = unbounded::<Msg>();
     let (event_tx, event_rx) = unbounded::<Event>();
-    let (ready_tx, ready_rx) =
-        crossbeam_channel::bounded::<Result<Option<OfflineRenderer>, String>>(1);
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<Ready, String>>(1);
 
     let thread = std::thread::Builder::new()
         .name("mosaic-audio".into())
         .spawn(move || run(mode, rx, event_tx, ready_tx))?;
 
     match ready_rx.recv() {
-        Ok(Ok(renderer)) => Ok((
+        Ok(Ok((renderer, analyser))) => Ok((
             Engine {
                 tx,
                 events: event_rx,
+                analyser,
                 thread: Some(thread),
             },
             renderer,
@@ -110,12 +113,7 @@ fn make_deck(id: DeckId, rate: u32) -> (Deck, DeckPlayer) {
     (deck, player)
 }
 
-fn run(
-    mode: Mode,
-    rx: Receiver<Msg>,
-    events: Sender<Event>,
-    ready: Sender<Result<Option<OfflineRenderer>, String>>,
-) {
+fn run(mode: Mode, rx: Receiver<Msg>, events: Sender<Event>, ready: Sender<Result<Ready, String>>) {
     let offline_rate = match mode {
         Mode::Offline(rate) => Some(rate),
         Mode::Device => None,
@@ -126,11 +124,13 @@ fn run(
     let (deck_b, player_b) = make_deck(DeckId::B, rate);
     let (cb_tx, cb_rx) = RingBuffer::<CbEvent>::new(256);
     let params = Arc::new(MixerParams::new());
+    let (tap, analyser) = analyser_pair();
     let mixer = Arc::new(Mutex::new(Mixer::new(
         rate,
         [player_a, player_b],
         cb_tx,
         Arc::clone(&params),
+        tap,
         offline_rate.is_some(),
     )));
     let failed = Arc::new(AtomicBool::new(false));
@@ -164,7 +164,7 @@ fn run(
     };
 
     let renderer = offline_rate.map(|_| OfflineRenderer::new(Arc::clone(&mixer)));
-    if ready.send(Ok(renderer)).is_err() {
+    if ready.send(Ok((renderer, analyser))).is_err() {
         return;
     }
 
@@ -245,6 +245,7 @@ impl Control {
             duration_hint: deck.duration_hint,
             out_rate: self.rate,
             shared: Arc::clone(&deck.shared),
+            params: Arc::clone(&self.params),
             events: self.internal_tx.clone(),
             cmds: cmds_rx,
             stop: Arc::clone(&stop),
@@ -338,10 +339,13 @@ impl Control {
                 then,
             } => self.fade(deck.index(), to, ms, curve, then),
             Command::SetVolume(v) => self.params.set_volume(v),
-            Command::SetEq { .. }
-            | Command::SetLeveling(_)
-            | Command::SetSpeed(_)
-            | Command::Shutdown => {}
+            Command::SetEq { enabled, gains_db } => {
+                self.params
+                    .set_eq(if enabled { gains_db } else { [0.0; 5] })
+            }
+            Command::SetLeveling(on) => self.params.leveling.store(on, Ordering::Relaxed),
+            Command::SetSpeed(v) => self.params.set_speed(v),
+            Command::Shutdown => {}
         }
     }
 
@@ -474,6 +478,14 @@ impl Control {
                 let (gen, secs) = (d.gen, d.shared.position());
                 self.emit(Event::Seeked { deck, gen });
                 self.emit(Event::Position { deck, gen, secs });
+            }
+            Internal::Buffering { deck, load_id, on } => {
+                let d = &self.decks[deck.index()];
+                if d.load_id != load_id {
+                    return;
+                }
+                let gen = d.gen;
+                self.emit(Event::Buffering { deck, gen, on });
             }
             Internal::Error {
                 deck,

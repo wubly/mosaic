@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
 
+pub use dsp::analyser::{Analyser, BINS as ANALYSER_BINS};
 pub use output::OfflineRenderer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -54,6 +55,8 @@ pub enum AfterFade {
 #[derive(Clone, Debug)]
 pub enum SourceSpec {
     File(PathBuf),
+    Http { url: String },
+    Hls { playlist_url: String },
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +153,7 @@ pub(crate) enum Msg {
 pub struct Engine {
     tx: Sender<Msg>,
     events: Receiver<Event>,
+    analyser: Analyser,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -172,6 +176,10 @@ impl Engine {
 
     pub fn events(&self) -> Receiver<Event> {
         self.events.clone()
+    }
+
+    pub fn analyser(&self) -> Analyser {
+        self.analyser.clone()
     }
 
     /// Blocks until the control thread has processed everything sent so far.

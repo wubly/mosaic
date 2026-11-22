@@ -1,11 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use rtrb::PushError;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::common::Tier;
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
@@ -14,18 +16,47 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Time;
 
 use crate::deck::{DeckShared, Marker, MarkerKind, Rings, NO_EOF};
+use crate::output::MixerParams;
 use crate::resample::StereoResampler;
+use crate::source::{SourceCtx, EXPIRED};
+use crate::stretch::Stretcher;
 use crate::{DeckId, SourceSpec};
 
 #[derive(thiserror::Error, Debug)]
-#[error("{0}")]
-pub struct StreamError(pub String);
+#[error("{message}")]
+pub struct StreamError {
+    pub message: String,
+    /// The format or codec isn't one symphonia can handle, so a fallback may apply.
+    pub unsupported: bool,
+}
 
 impl StreamError {
+    pub fn new(message: impl Into<String>) -> StreamError {
+        StreamError {
+            message: message.into(),
+            unsupported: false,
+        }
+    }
+
     fn from_sym(context: &str, e: &SymError) -> StreamError {
-        StreamError(format!("{context}: {e}"))
+        if let SymError::IoError(io) = e {
+            if io.to_string() == EXPIRED {
+                return StreamError::new(EXPIRED);
+            }
+        }
+        StreamError {
+            message: format!("{context}: {e}"),
+            unsupported: matches!(e, SymError::Unsupported(_)),
+        }
     }
 }
+
+static CODECS: LazyLock<CodecRegistry> = LazyLock::new(|| {
+    let mut registry = CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut registry);
+    registry.register_audio_decoder_at_tier::<symphonia_opus::OpusDecoder>(Tier::Fallback);
+    registry
+});
 
 /// Decoded audio as interleaved stereo f32 at the stream's own sample rate.
 pub trait AudioStream: Send {
@@ -54,6 +85,7 @@ impl SymphoniaStream {
         source: Box<dyn MediaSource>,
         extension: Option<&str>,
         duration_hint: Option<f64>,
+        after_probe: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<SymphoniaStream, StreamError> {
         let mut hint = Hint::new();
         if let Some(ext) = extension {
@@ -68,23 +100,29 @@ impl SymphoniaStream {
                 MetadataOptions::default(),
             )
             .map_err(|e| StreamError::from_sym("This format isn't supported", &e))?;
+        if let Some(done) = after_probe {
+            done();
+        }
 
         let track = format
             .default_track(TrackType::Audio)
             .or_else(|| format.first_track(TrackType::Audio))
-            .ok_or_else(|| StreamError("No audio track found".into()))?;
+            .ok_or_else(|| StreamError::new("No audio track found"))?;
         let Some(CodecParameters::Audio(params)) = &track.codec_params else {
-            return Err(StreamError("No audio track found".into()));
+            return Err(StreamError::new("No audio track found"));
         };
-        let reg = symphonia::default::get_codecs()
+        let reg = CODECS
             .get_audio_decoder(params.codec)
-            .ok_or_else(|| StreamError("This format needs ffmpeg installed".into()))?;
+            .ok_or_else(|| StreamError {
+                message: "This format needs ffmpeg installed".into(),
+                unsupported: true,
+            })?;
         let decoder = (reg.factory)(params, &AudioDecoderOptions::default())
             .map_err(|e| StreamError::from_sym("Could not start decoder", &e))?;
 
         let rate = params
             .sample_rate
-            .ok_or_else(|| StreamError("Unknown sample rate".into()))?;
+            .ok_or_else(|| StreamError::new("Unknown sample rate"))?;
         let time_base = track.time_base;
         let from_frames = track.num_frames.map(|n| n as f64 / f64::from(rate));
         let from_duration = track
@@ -126,6 +164,14 @@ fn to_stereo(src: &[f32], channels: usize, out: &mut Vec<f32>) {
     }
 }
 
+impl SymphoniaStream {
+    /// Drops decoded audio until `rel_secs` into the stream (used after restarting at a segment boundary).
+    pub fn skip_to(&mut self, rel_secs: f64) {
+        self.pos = 0.0;
+        self.skip_until = (rel_secs > 0.0).then_some(rel_secs);
+    }
+}
+
 impl AudioStream for SymphoniaStream {
     fn sample_rate(&self) -> u32 {
         self.rate
@@ -137,8 +183,8 @@ impl AudioStream for SymphoniaStream {
 
     fn seek(&mut self, secs: f64) -> Result<f64, StreamError> {
         let target = secs.max(0.0);
-        let time = Time::try_from_secs_f64(target)
-            .ok_or_else(|| StreamError("Bad seek position".into()))?;
+        let time =
+            Time::try_from_secs_f64(target).ok_or_else(|| StreamError::new("Bad seek position"))?;
         let seeked = self
             .format
             .seek(
@@ -220,6 +266,11 @@ pub(crate) enum Internal {
         load_id: u64,
         epoch: u32,
     },
+    Buffering {
+        deck: DeckId,
+        load_id: u64,
+        on: bool,
+    },
     Error {
         deck: DeckId,
         load_id: u64,
@@ -236,6 +287,7 @@ pub(crate) struct DecoderCtx {
     pub duration_hint: Option<f64>,
     pub out_rate: u32,
     pub shared: Arc<DeckShared>,
+    pub params: Arc<MixerParams>,
     pub events: Sender<Internal>,
     pub cmds: Receiver<DecCmd>,
     pub stop: Arc<AtomicBool>,
@@ -336,6 +388,133 @@ impl From<Interrupt> for Outcome {
     }
 }
 
+/// Resample, then time-stretch when the speed isn't 1, then queue for the mixer.
+struct Pipeline {
+    resampler: StereoResampler,
+    stretcher: Stretcher,
+    stretching: bool,
+    tmp: Vec<f32>,
+}
+
+impl Pipeline {
+    fn new(in_rate: u32, out_rate: u32) -> anyhow::Result<Pipeline> {
+        Ok(Pipeline {
+            resampler: StereoResampler::new(in_rate, out_rate)?,
+            stretcher: Stretcher::new(out_rate),
+            stretching: false,
+            tmp: Vec::new(),
+        })
+    }
+
+    fn reset(&mut self) {
+        self.resampler.reset();
+        self.stretcher.reset();
+        self.stretching = false;
+    }
+
+    fn feed(
+        &mut self,
+        chunk: &[f32],
+        start: f64,
+        rings: &mut Rings,
+        ctx: &DecoderCtx,
+    ) -> Result<(), Interrupt> {
+        let Pipeline {
+            resampler,
+            stretcher,
+            stretching,
+            tmp,
+        } = self;
+        resampler.process(chunk, start, &mut |block, pos| {
+            emit(block, pos, stretcher, stretching, tmp, rings, ctx)
+        })
+    }
+
+    fn finish(&mut self, rings: &mut Rings, ctx: &DecoderCtx, pos: f64) -> Result<(), Interrupt> {
+        let Pipeline {
+            resampler,
+            stretcher,
+            stretching,
+            tmp,
+        } = self;
+        resampler
+            .finish(&mut |block, pos| emit(block, pos, stretcher, stretching, tmp, rings, ctx))?;
+        if *stretching {
+            tmp.clear();
+            stretcher.flush(tmp);
+            push_block(rings, ctx, tmp, pos)?;
+        }
+        Ok(())
+    }
+}
+
+fn emit(
+    block: &[f32],
+    pos: f64,
+    stretcher: &mut Stretcher,
+    stretching: &mut bool,
+    tmp: &mut Vec<f32>,
+    rings: &mut Rings,
+    ctx: &DecoderCtx,
+) -> Result<(), Interrupt> {
+    let speed = f32::from_bits(ctx.params.speed.load(Ordering::Relaxed));
+    let want = (speed - 1.0).abs() > 0.005;
+    if want != *stretching {
+        if *stretching {
+            tmp.clear();
+            stretcher.flush(tmp);
+            push_block(rings, ctx, tmp, pos)?;
+        }
+        stretcher.reset();
+        *stretching = want;
+    }
+    if !want {
+        return push_block(rings, ctx, block, pos);
+    }
+    tmp.clear();
+    stretcher.process(block, speed, tmp);
+    if tmp.is_empty() {
+        return Ok(());
+    }
+    push_block(rings, ctx, tmp, pos)
+}
+
+/// Opens a source on a helper thread so a stalled network can't block stopping.
+fn open_stream(ctx: &DecoderCtx) -> Result<Box<dyn AudioStream>, Result<StreamError, Outcome>> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let events = ctx.events.clone();
+    let (deck, load_id) = (ctx.deck, ctx.load_id);
+    let source_ctx = SourceCtx {
+        duration_hint: ctx.duration_hint,
+        out_rate: ctx.out_rate,
+        buffering: Arc::new(move |on| {
+            let _ = events.send(Internal::Buffering { deck, load_id, on });
+        }),
+        cancel: Arc::clone(&ctx.stop),
+    };
+    let spec = ctx.source.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mosaic-open".into())
+        .spawn(move || {
+            let _ = tx.send(crate::source::open(&spec, &source_ctx));
+        });
+    if let Err(e) = spawned {
+        return Err(Ok(StreamError::new(e.to_string())));
+    }
+    loop {
+        if let Err(i) = poll(ctx) {
+            return Err(Err(Outcome::from(i)));
+        }
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(result) => return result.map_err(Ok),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(Ok(StreamError::new("Could not open the stream")))
+            }
+        }
+    }
+}
+
 /// Decodes until told to stop. Returns the rings so the next track can reuse them.
 pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
     let report = |message: String| {
@@ -350,16 +529,17 @@ pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
         return rings;
     }
 
-    let mut stream = match crate::source::open(&ctx.source, ctx.duration_hint) {
+    let mut stream = match open_stream(&ctx) {
         Ok(s) => s,
-        Err(e) => {
-            report(e.0);
+        Err(Ok(e)) => {
+            report(e.message);
             wait_for_stop(&ctx);
             return rings;
         }
+        Err(Err(_)) => return rings,
     };
-    let mut resampler = match StereoResampler::new(stream.sample_rate(), ctx.out_rate) {
-        Ok(r) => r,
+    let mut pipeline = match Pipeline::new(stream.sample_rate(), ctx.out_rate) {
+        Ok(p) => p,
         Err(e) => {
             report(e.to_string());
             wait_for_stop(&ctx);
@@ -374,12 +554,14 @@ pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
 
     let mut pending_seek = (ctx.start_at > 0.001).then_some((ctx.start_at, None));
     let mut chunk = Vec::new();
+    let mut last_pos = ctx.start_at;
 
     'outer: loop {
         if let Some((secs, epoch)) = pending_seek.take() {
             match stream.seek(secs) {
                 Ok(reached) => {
-                    resampler.reset();
+                    pipeline.reset();
+                    last_pos = reached;
                     if let Some(epoch) = epoch {
                         if flush_marker(&mut rings, &ctx, epoch, reached).is_err() {
                             return rings;
@@ -391,7 +573,7 @@ pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
                         });
                     }
                 }
-                Err(e) => report(e.0),
+                Err(e) => report(e.message),
             }
         }
 
@@ -401,24 +583,23 @@ pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
             }
             match stream.next_chunk(&mut chunk) {
                 Ok(Some(start)) => {
-                    let sent = resampler.process(&chunk, start, &mut |block, pos| {
-                        push_block(&mut rings, &ctx, block, pos)
-                    });
-                    if let Err(i) = sent {
+                    last_pos = start;
+                    if let Err(i) = pipeline.feed(&chunk, start, &mut rings, &ctx) {
                         break Outcome::from(i);
                     }
                 }
                 Ok(None) => {
-                    let sent = resampler
-                        .finish(&mut |block, pos| push_block(&mut rings, &ctx, block, pos));
-                    if let Err(i) = sent {
+                    if let Err(i) = pipeline.finish(&mut rings, &ctx, last_pos) {
                         break Outcome::from(i);
                     }
                     ctx.shared.eof_frame.store(rings.pushed, Ordering::Release);
                     break idle(&ctx);
                 }
                 Err(e) => {
-                    report(e.0);
+                    if ctx.stop.load(Ordering::Relaxed) {
+                        break Outcome::Stopped;
+                    }
+                    report(e.message);
                     break idle(&ctx);
                 }
             }

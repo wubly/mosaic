@@ -243,7 +243,7 @@ impl DeckPlayer {
         };
 
         if blocking && self.samples.slots() / 2 < want {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
             while self.samples.slots() / 2 < want && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_micros(100));
             }

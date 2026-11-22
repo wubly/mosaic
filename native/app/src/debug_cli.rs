@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use mosaic_core::model::TrackId;
 use mosaic_core::storage::{load_config, Dirs};
 use mosaic_services::lyrics::service::LyricsArgs;
+use mosaic_services::soundcloud::client_types::StreamKind;
 use mosaic_services::Services;
 
 fn services(dirs: Dirs) -> Result<Services> {
@@ -80,21 +81,33 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             }
             println!("{} tracks", tracks.len());
         }
-        "play" => play_file(arg(1)?)?,
+        "play" => play(mosaic_audio::SourceSpec::File(arg(1)?.into()), 0.0)?,
+        "sc-play" => {
+            let id = TrackId::Num(arg(1)?.parse()?);
+            let start = cmd.get(2).map_or(Ok(0.0), |v| v.parse::<f64>())?;
+            let stream = services.sc_stream(&id).await?;
+            let source = match stream.kind {
+                StreamKind::Progressive => mosaic_audio::SourceSpec::Http { url: stream.url },
+                StreamKind::Hls(_) => mosaic_audio::SourceSpec::Hls {
+                    playlist_url: stream.url,
+                },
+            };
+            tokio::task::spawn_blocking(move || play(source, start)).await??;
+        }
         other => bail!("unknown debug command `{other}`"),
     }
     Ok(())
 }
 
-fn play_file(path: &str) -> Result<()> {
-    use mosaic_audio::{Command, DeckId, Engine, Event, SourceSpec};
+fn play(source: mosaic_audio::SourceSpec, start_at: f64) -> Result<()> {
+    use mosaic_audio::{Command, DeckId, Engine, Event};
 
     let engine = Engine::start()?;
     engine.send(Command::Load {
         deck: DeckId::A,
         gen: 1,
-        source: SourceSpec::File(path.into()),
-        start_at: 0.0,
+        source,
+        start_at,
         autoplay: true,
         fade_in_ms: 0,
         duration_hint: None,
