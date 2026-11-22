@@ -311,23 +311,73 @@ impl Services {
         }
     }
 
+    /// Spotify caps `/artists/{id}/albums` at 10 per page, so walk a few pages.
     async fn spotify_artist_albums(&self, id: &str) -> Vec<AlbumCard> {
-        let json = self
+        const PAGE: usize = 10;
+        let mut all = Vec::new();
+        for page in 0..5 {
+            let Ok(json) = self
+                .spotify_api(
+                    &format!("/artists/{id}/albums"),
+                    &[
+                        ("include_groups", "album,single".into()),
+                        ("limit", PAGE.to_string()),
+                        ("offset", (page * PAGE).to_string()),
+                        ("market", self.spotify_country()),
+                    ],
+                )
+                .await
+            else {
+                break;
+            };
+            let n = items(&json["items"]).count();
+            all.extend(items(&json["items"]).cloned());
+            if n < PAGE || json["next"].is_null() {
+                break;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        all.iter()
+            .filter(|a| seen.insert(text(&a["name"]).to_lowercase()))
+            .map(album_card)
+            .collect()
+    }
+
+    /// An artist's popular tracks. `/top-tracks` is closed to newer apps (403), so fall back to
+    /// the artist's search hits, keeping only tracks they are actually credited on.
+    async fn spotify_artist_top(
+        &self,
+        id: &str,
+        name: &str,
+        market: &[(&str, String)],
+    ) -> Vec<Track> {
+        if let Ok(top) = self
+            .spotify_api(&format!("/artists/{id}/top-tracks"), market)
+            .await
+        {
+            let found = usable(items(&top["tracks"]));
+            if !found.is_empty() {
+                return found;
+            }
+        }
+        let Ok(json) = self
             .spotify_api(
-                &format!("/artists/{id}/albums"),
+                "/search",
                 &[
-                    ("include_groups", "album,single".into()),
-                    ("limit", "50".into()),
+                    ("q", format!("artist:\"{name}\"")),
+                    ("type", "track".into()),
+                    ("limit", Self::SEARCH_LIMIT.to_string()),
                     ("market", self.spotify_country()),
                 ],
             )
             .await
-            .unwrap_or(Value::Null);
-        let mut seen = std::collections::HashSet::new();
-        items(&json["items"])
-            .filter(|a| seen.insert(text(&a["name"]).to_lowercase()))
-            .map(album_card)
-            .collect()
+        else {
+            return Vec::new();
+        };
+        usable(
+            items(&json["tracks"]["items"])
+                .filter(|t| items(&t["artists"]).any(|a| a["id"].as_str() == Some(id))),
+        )
     }
 
     /// Full tracks for `spotify:track:` URIs, in order; ones that fail to load are skipped.
@@ -353,19 +403,15 @@ impl Services {
 
     pub async fn spotify_artist(&self, id: &str) -> Result<ArtistPage> {
         let market = [("market", self.spotify_country())];
-        let (artist_path, top_path) = (
-            format!("/artists/{id}"),
-            format!("/artists/{id}/top-tracks"),
-        );
-        let (artist, top, albums) = futures::join!(
-            self.spotify_api(&artist_path, &[]),
-            self.spotify_api(&top_path, &market),
+        let artist = self.spotify_api(&format!("/artists/{id}"), &[]).await?;
+        let name = text(&artist["name"]);
+        let (top, albums) = futures::join!(
+            self.spotify_artist_top(id, &name, &market),
             self.spotify_artist_albums(id),
         );
-        let top = top.unwrap_or(Value::Null);
         Ok(ArtistPage {
-            artist: artist_card(&artist?),
-            top: usable(items(&top["tracks"])),
+            artist: artist_card(&artist),
+            top,
             albums,
         })
     }

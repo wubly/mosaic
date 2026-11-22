@@ -62,6 +62,32 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
                 r.playlists.len()
             );
         }
+        "sp-artist" => {
+            let a = services.spotify_artist(arg(1)?).await?;
+            println!(
+                "{}: {} top, {} albums",
+                a.artist.name,
+                a.top.len(),
+                a.albums.len()
+            );
+            for t in &a.top {
+                println!("  {} - {}", t.artist, t.title);
+            }
+            for al in &a.albums {
+                println!("  [{}]", al.name);
+            }
+        }
+        "sp-raw" => {
+            let q: Vec<(&str, String)> = cmd[2..]
+                .iter()
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k, v.to_string()))
+                .collect();
+            match services.spotify_api(arg(1)?, &q).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v)?),
+                Err(e) => println!("ERROR: {e}"),
+            }
+        }
         "sc-stream" => {
             let id = TrackId::Num(arg(1)?.parse()?);
             let s = services.sc_stream(&id).await?;
