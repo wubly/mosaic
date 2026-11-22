@@ -32,6 +32,23 @@ pub enum ListRef {
     SpotifyQueue,
 }
 
+impl ListRef {
+    /// Whether the list is a real context (an album, playlist, chart, likes…) that should become
+    /// the queue when one of its tracks is clicked. Recently played, history and search results
+    /// are a jumble of whatever came up, so a click there plays just that track and autoplay
+    /// carries on with similar ones.
+    pub fn is_context(&self) -> bool {
+        !matches!(
+            self,
+            ListRef::Recent
+                | ListRef::History
+                | ListRef::Results
+                | ListRef::Device
+                | ListRef::SpotifyShelf(super::spotify::Shelf::Recent)
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackRef {
     pub list: ListRef,
@@ -687,7 +704,8 @@ impl App {
                 } else if r.list == ListRef::Queue {
                     self.player_input(PlayerInput::PlayIndex(r.index))
                 } else {
-                    self.player_input(PlayerInput::Play(track, Some(list)))
+                    let list = r.list.is_context().then_some(list);
+                    self.player_input(PlayerInput::Play(track, list))
                 }
             }
             Msg::Like(r) => {
@@ -806,4 +824,34 @@ fn tooltip_unavailable<'a>(
         iced::widget::tooltip::Position::Top,
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::views::spotify::Shelf;
+
+    #[test]
+    fn only_real_contexts_become_the_queue() {
+        for list in [
+            ListRef::Likes,
+            ListRef::Playlist("p".into()),
+            ListRef::SpotifyPage,
+            ListRef::SpotifySaved,
+            ListRef::SpotifyShelf(Shelf::Liked),
+            ListRef::Local,
+            ListRef::Charts,
+        ] {
+            assert!(list.is_context(), "{list:?}");
+        }
+        for list in [
+            ListRef::Recent,
+            ListRef::History,
+            ListRef::Results,
+            ListRef::Device,
+            ListRef::SpotifyShelf(Shelf::Recent),
+        ] {
+            assert!(!list.is_context(), "{list:?}");
+        }
+    }
 }
