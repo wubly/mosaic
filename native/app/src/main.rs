@@ -1,6 +1,9 @@
 mod args;
 #[cfg(feature = "debug-cli")]
 mod debug_cli;
+#[allow(dead_code)] // the UI consumes the remaining effects from M7
+mod player;
+mod resolve;
 
 use iced::widget::{container, text};
 use iced::{window, Color, Element, Size, Task, Theme};

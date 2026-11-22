@@ -2815,6 +2815,7 @@ dependencies = [
  "mosaic-audio",
  "mosaic-core",
  "mosaic-services",
+ "rand 0.10.4",
  "serde_json",
  "tokio",
 ]

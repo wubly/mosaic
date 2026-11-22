@@ -94,6 +94,12 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             };
             tokio::task::spawn_blocking(move || play(source, start)).await??;
         }
+        "queue-play" => {
+            let ids = (1..cmd.len())
+                .map(|i| Ok(TrackId::Num(arg(i)?.parse()?)))
+                .collect::<Result<Vec<_>>>()?;
+            queue_play(services, ids).await?;
+        }
         other => bail!("unknown debug command `{other}`"),
     }
     Ok(())
@@ -127,4 +133,114 @@ fn play(source: mosaic_audio::SourceSpec, start_at: f64) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Plays a SoundCloud queue through the real controller with a 6 s crossfade.
+async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
+    use std::time::Instant;
+
+    use mosaic_audio::Engine;
+    use mosaic_core::model::Settings;
+
+    use crate::player::{Effect, PlayerController, PlayerInput};
+    use crate::resolve::resolve_stream;
+
+    let tracks = ids.iter().map(stub_track).collect::<Result<Vec<_>>>()?;
+    let first = tracks.first().cloned().context("need at least one id")?;
+
+    let engine = Engine::start()?;
+    let (tx, rx) = crossbeam_channel::unbounded::<PlayerInput>();
+    {
+        let (events, events_tx) = (engine.events(), tx.clone());
+        std::thread::spawn(move || {
+            for e in events.iter() {
+                if events_tx.send(PlayerInput::Engine(e)).is_err() {
+                    break;
+                }
+            }
+        });
+        let tick_tx = tx.clone();
+        std::thread::spawn(move || {
+            while tick_tx.send(PlayerInput::Tick).is_ok() {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+
+    let mut controller = PlayerController::new(Settings {
+        crossfade: 6.0,
+        ..Settings::default()
+    });
+    for effect in controller.sync_engine() {
+        if let Effect::Engine(c) = effect {
+            engine.send(c);
+        }
+    }
+    let mut pending = vec![PlayerInput::Play(first, Some(tracks))];
+    let mut outstanding = 0usize;
+    let mut last_print = -10.0;
+    loop {
+        let input = match pending.pop() {
+            Some(i) => i,
+            None => rx.recv()?,
+        };
+        let mut done = false;
+        match &input {
+            PlayerInput::StreamResolved { .. } | PlayerInput::Related { .. } => {
+                outstanding = outstanding.saturating_sub(1)
+            }
+            PlayerInput::Engine(mosaic_audio::Event::Position { secs, .. })
+                if secs - last_print >= 1.0 =>
+            {
+                println!("position {secs:.1}s");
+                last_print = *secs;
+            }
+            PlayerInput::Engine(mosaic_audio::Event::Ended { .. }) => done = true,
+            _ => {}
+        }
+        for effect in controller.handle(input, Instant::now()) {
+            match effect {
+                Effect::Engine(c) => engine.send(c),
+                Effect::ResolveStream { track, gen } => {
+                    outstanding += 1;
+                    done = false;
+                    let (services, tx) = (services.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let result = resolve_stream(&services, &track).await;
+                        let _ = tx.send(PlayerInput::StreamResolved { gen, result });
+                    });
+                }
+                Effect::FetchRelated { seed, purpose } => {
+                    outstanding += 1;
+                    done = false;
+                    let (services, tx) = (services.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let result = services
+                            .sc_related(&seed.id, 40)
+                            .await
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(PlayerInput::Related {
+                            purpose,
+                            seed,
+                            result,
+                        });
+                    });
+                }
+                Effect::Toast(message) => println!("toast: {message}"),
+                _ => {}
+            }
+        }
+        if !controller.error.is_empty() {
+            bail!("{}", controller.error);
+        }
+        if done && outstanding == 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn stub_track(id: &TrackId) -> Result<mosaic_core::model::Track> {
+    Ok(serde_json::from_value(serde_json::json!({
+        "id": id, "source": "soundcloud", "title": id.key(), "artist": "",
+    }))?)
 }

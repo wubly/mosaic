@@ -180,23 +180,41 @@ impl Queue {
         direction: isize,
         shuffle: bool,
         repeat: Repeat,
-        mut pick: impl FnMut(usize) -> usize,
+        pick: impl FnMut(usize) -> usize,
     ) -> Option<usize> {
-        let len = self.list.len();
-        if shuffle && direction > 0 && len > 1 {
-            loop {
-                let p = pick(len);
-                if p as isize != self.index {
-                    return Some(p);
-                }
+        step_index(
+            self.list.len(),
+            self.index,
+            direction,
+            shuffle,
+            repeat,
+            pick,
+        )
+    }
+}
+
+/// `next_index` on bare numbers, so callers can walk past unplayable entries.
+pub fn step_index(
+    len: usize,
+    from: isize,
+    direction: isize,
+    shuffle: bool,
+    repeat: Repeat,
+    mut pick: impl FnMut(usize) -> usize,
+) -> Option<usize> {
+    if shuffle && direction > 0 && len > 1 {
+        loop {
+            let p = pick(len);
+            if p as isize != from {
+                return Some(p);
             }
         }
-        let index = self.index + direction;
-        if index >= len as isize {
-            return (repeat == Repeat::All).then_some(0);
-        }
-        Some(index.max(0) as usize)
     }
+    let index = from + direction;
+    if index >= len as isize {
+        return (repeat == Repeat::All).then_some(0);
+    }
+    Some(index.max(0) as usize)
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ iced = { version = "0.14.0", features = ["tokio", "image"] }
 mosaic-audio = { version = "0.5.0", path = "../crates/audio" }
 mosaic-core = { version = "0.5.0", path = "../crates/core" }
 mosaic-services = { version = "0.5.0", path = "../crates/services" }
+rand = "0.10"
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal"] }
 
