@@ -8,11 +8,16 @@ use image::imageops::FilterType;
 use image::RgbaImage;
 use lru::LruCache;
 use sha1::{Digest, Sha1};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, Semaphore};
 
 use crate::Services;
 
-const MEMORY_ENTRIES: usize = 200;
+/// Decoded images kept here for re-requests. The app holds its own handles to what is on screen
+/// (sharing these pixels), so this only needs to cover recently scrolled-past artwork.
+const MEMORY_ENTRIES: usize = 48;
+/// Decodes running at once. A page of covers otherwise starts one blocking thread per image, each
+/// holding a full-size decode, which spikes memory and leaves the allocator fragmented.
+const DECODE_PERMITS: usize = 4;
 
 type Key = (String, u32);
 type Slot = Arc<OnceCell<Result<Arc<RgbaImage>, String>>>;
@@ -20,6 +25,7 @@ type Slot = Arc<OnceCell<Result<Arc<RgbaImage>, String>>>;
 pub struct State {
     lru: Mutex<LruCache<Key, Arc<RgbaImage>>>,
     pending: Mutex<HashMap<Key, Slot>>,
+    decoding: Semaphore,
 }
 
 impl State {
@@ -29,6 +35,7 @@ impl State {
                 NonZeroUsize::new(MEMORY_ENTRIES).expect("non-zero"),
             )),
             pending: Mutex::default(),
+            decoding: Semaphore::new(DECODE_PERMITS),
         }
     }
 }
@@ -56,13 +63,19 @@ fn extension_of(url: &str) -> &str {
 }
 
 fn decode(bytes: &[u8], max_px: u32) -> Result<RgbaImage> {
-    let image = image::load_from_memory(bytes)?;
+    let mut image = image::load_from_memory(bytes)?;
+    // Box-sample big artwork (a 3000 px album cover) down to twice the target first: Lanczos over
+    // the full image allocates a float buffer of width × target height, tens of MB per cover.
+    let near = max_px.saturating_mul(2);
+    if image.width().max(image.height()) > near {
+        image = image.thumbnail(near, near);
+    }
     let image = if image.width().max(image.height()) > max_px {
         image.resize(max_px, max_px, FilterType::Lanczos3)
     } else {
         image
     };
-    Ok(image.to_rgba8())
+    Ok(image.into_rgba8())
 }
 
 impl Services {
@@ -125,6 +138,7 @@ impl Services {
                 let load = async {
                     let bytes = self.image_bytes(&key.0).await?;
                     let max = key.1;
+                    let _permit = self.inner.images.decoding.acquire().await?;
                     tokio::task::spawn_blocking(move || decode(&bytes, max)).await?
                 };
                 load.await.map(Arc::new).map_err(|e| e.to_string())
@@ -175,5 +189,17 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&img, &again));
         assert!(services.load_image("/nonexistent.png", 100).await.is_err());
+    }
+
+    #[test]
+    fn big_artwork_is_fitted_through_a_thumbnail() {
+        let mut big = RgbaImage::from_pixel(1200, 600, image::Rgba([200, 40, 60, 255]));
+        big.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let img = decode(bytes.get_ref(), 100).unwrap();
+        assert_eq!((img.width(), img.height()), (100, 50));
+        let px = img.get_pixel(50, 25).0;
+        assert!(px[0] > 190 && px[1] < 50, "keeps the colour: {px:?}");
     }
 }
