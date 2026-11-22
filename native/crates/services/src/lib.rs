@@ -1,0 +1,9 @@
+pub mod discord;
+pub mod http;
+pub mod images;
+pub mod local;
+pub mod lyrics;
+pub mod oauth;
+pub mod soundcloud;
+pub mod spotify;
+pub mod update;
