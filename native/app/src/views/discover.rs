@@ -391,6 +391,24 @@ impl App {
                     ));
                 }
             }
+            let sp = &self.ui.spotify.search;
+            if !sp.artists.is_empty() {
+                body = body
+                    .push(h3("Spotify artists (beta)".into()))
+                    .push(self.artist_cards(&sp.artists, p));
+            }
+            if !sp.albums.is_empty() {
+                body = body
+                    .push(h3("Spotify albums".into()))
+                    .push(self.album_cards(&sp.albums, p));
+            }
+            if !sp.tracks.is_empty() {
+                body = body.push(h3("Spotify songs".into())).push(self.tile_shelf(
+                    &sp.tracks,
+                    ListRef::SpotifySearch,
+                    p,
+                ));
+            }
             body = body.push(h3(if d.busy {
                 "Searching…".into()
             } else {

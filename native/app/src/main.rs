@@ -1,7 +1,3 @@
-// Library pieces (styles, icons, animation helpers) are consumed by views added in M7-M12; this
-// allowance is removed in M13.
-#![allow(dead_code)]
-
 mod ambient;
 mod anim;
 mod app;
@@ -10,6 +6,7 @@ mod args;
 mod debug_cli;
 mod external;
 mod images;
+mod logging;
 mod player;
 mod resolve;
 mod text_measure;
@@ -57,7 +54,8 @@ fn main() -> anyhow::Result<()> {
         Err(_) => {}
     }
 
-    let _ = migrate_legacy(&dirs);
+    logging::init(&dirs);
+    let migrated = migrate_legacy(&dirs).ok().flatten();
     let config = Arc::new(Mutex::new(load_config(&dirs)));
     let store = load_store(&dirs);
     let services = Services::new(dirs.clone(), Arc::clone(&config))?;
@@ -74,7 +72,10 @@ fn main() -> anyhow::Result<()> {
             });
             (Some(engine), None)
         }
-        Err(_) => (None, Some("No audio output device found".to_string())),
+        Err(e) => {
+            tracing::warn!("audio output unavailable: {e}");
+            (None, Some("No audio output device found".to_string()))
+        }
     };
     let media = mosaic_platform::media_controls::Media::new(None, |cmd| {
         let _ = external::sender().send(external::External::Media(cmd));
@@ -84,13 +85,14 @@ fn main() -> anyhow::Result<()> {
     if let Ok(mut flags) = FLAGS.lock() {
         *flags = Some(Flags {
             dirs,
-            config,
             store,
             services,
             engine,
             engine_error,
             media,
             tray,
+            migrated: migrated.is_some(),
+            reset_window: args.reset_window,
             files: args.files,
             debug_theme: args.debug_theme,
             debug_screenshot: args.debug_screenshot,
@@ -121,11 +123,16 @@ fn start_tray() -> Option<mosaic_platform::tray::Tray> {
         height: rgba.height(),
         rgba: rgba.into_raw(),
     };
-    mosaic_platform::tray::start(
+    match mosaic_platform::tray::start(
         &icon,
         std::sync::Arc::new(|action| {
             let _ = external::sender().send(external::External::Tray(action));
         }),
-    )
-    .ok()
+    ) {
+        Ok(tray) => Some(tray),
+        Err(e) => {
+            tracing::warn!("no system tray: {e}");
+            None
+        }
+    }
 }

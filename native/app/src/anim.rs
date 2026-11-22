@@ -85,8 +85,6 @@ pub enum Ease {
     Linear,
     /// `cubic-bezier(.3, 0, 0, 1)`, used for the wavy amplitude.
     Out,
-    SineIn,
-    SineOut,
 }
 
 impl Ease {
@@ -94,8 +92,6 @@ impl Ease {
         match self {
             Ease::Linear => t,
             Ease::Out => cubic_bezier(0.3, 0.0, 0.0, 1.0, t),
-            Ease::SineIn => (t * std::f32::consts::FRAC_PI_2).sin(),
-            Ease::SineOut => 1.0 - (t * std::f32::consts::FRAC_PI_2).cos(),
         }
     }
 }
@@ -277,12 +273,6 @@ mod tests {
         assert!((t.at(now + Duration::from_millis(50)) - 5.0).abs() < 1e-4);
         assert_eq!(t.at(now + Duration::from_millis(200)), 10.0);
         assert!(t.is_done(now + Duration::from_millis(100)));
-        let s = Tween::new(0.0, 1.0, now, Duration::from_millis(100), Ease::SineIn);
-        assert!(
-            (s.at(now + Duration::from_millis(50)) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3
-        );
-        let o = Tween::new(0.0, 1.0, now, Duration::from_millis(100), Ease::SineOut);
-        assert!((o.at(now + Duration::from_millis(50)) - 0.2929).abs() < 1e-3);
     }
 
     #[test]

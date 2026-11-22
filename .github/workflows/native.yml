@@ -1,0 +1,43 @@
+name: native
+
+on:
+  push:
+    branches: [main, native]
+    tags: ['v*']
+  pull_request:
+
+defaults:
+  run:
+    working-directory: native
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cargo install cargo-packager --locked
+          cargo packager --release -p mosaic
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: mosaic-${{ matrix.os }}
+          path: native/target/release/packager/*

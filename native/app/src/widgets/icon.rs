@@ -13,6 +13,7 @@ macro_rules! icons {
         pub enum Icon { $($variant),* }
 
         impl Icon {
+            #[cfg(test)]
             pub const ALL: &'static [Icon] = &[$(Icon::$variant),*];
 
             pub fn name(self) -> &'static str {
@@ -23,28 +24,25 @@ macro_rules! icons {
 }
 
 icons! {
-    Add => "add", Album => "album", ArrowBack => "arrow_back", ArrowForward => "arrow_forward",
-    AudioFile => "audio_file", AutoAwesome => "auto_awesome", Bedtime => "bedtime", Bolt => "bolt",
-    Check => "check", CheckBox => "check_box", CheckBoxBlank => "check_box_outline_blank",
-    ChevronRight => "chevron_right", ClearAll => "clear_all", Close => "close",
-    CloudDownload => "cloud_download", CreateNewFolder => "create_new_folder", Delete => "delete",
-    DragIndicator => "drag_indicator", Edit => "edit", ExpandLess => "expand_less",
-    ExpandMore => "expand_more", Explore => "explore", Favorite => "favorite", Folder => "folder",
-    FolderOpen => "folder_open", Fullscreen => "fullscreen", GraphicEq => "graphic_eq",
-    History => "history", ArrowDown => "keyboard_arrow_down", LibraryMusic => "library_music",
-    Link => "link", Fire => "local_fire_department", Lock => "lock", Lyrics => "lyrics",
-    MoreVert => "more_vert", MusicNote => "music_note", OpenInFull => "open_in_full",
-    OpenInNew => "open_in_new", Pause => "pause", Person => "person",
-    PictureInPicture => "picture_in_picture_alt", PlayArrow => "play_arrow",
-    PlaylistAdd => "playlist_add", PlaylistPlay => "playlist_play", QueueMusic => "queue_music",
-    Refresh => "refresh", Repeat => "repeat", RepeatOne => "repeat_one",
-    RestartAlt => "restart_alt", Search => "search", SearchOff => "search_off",
-    Sensors => "sensors", Settings => "settings", Shuffle => "shuffle", SkipNext => "skip_next",
-    SkipPrevious => "skip_previous", Subtitles => "subtitles", Tune => "tune",
-    UploadFile => "upload_file", VolumeDown => "volume_down", VolumeOff => "volume_off",
-    VolumeUp => "volume_up", Minimize => "remove", Maximize => "crop_square",
-    Restore => "filter_none", Sync => "sync", Warning => "warning",
-}
+Add => "add", Album => "album", ArrowBack => "arrow_back", ArrowForward => "arrow_forward",
+AudioFile => "audio_file", AutoAwesome => "auto_awesome", Bedtime => "bedtime", Check => "check", CheckBox => "check_box", CheckBoxBlank => "check_box_outline_blank",
+ChevronRight => "chevron_right", ClearAll => "clear_all", Close => "close",
+CloudDownload => "cloud_download", CreateNewFolder => "create_new_folder", Delete => "delete",
+DragIndicator => "drag_indicator", Edit => "edit", ExpandMore => "expand_more", Explore => "explore", Favorite => "favorite", Folder => "folder",
+FolderOpen => "folder_open", Fullscreen => "fullscreen", GraphicEq => "graphic_eq",
+History => "history", ArrowDown => "keyboard_arrow_down", LibraryMusic => "library_music",
+Link => "link", Fire => "local_fire_department", Lyrics => "lyrics",
+MoreVert => "more_vert", MusicNote => "music_note", OpenInFull => "open_in_full",
+OpenInNew => "open_in_new", Pause => "pause", Person => "person",
+PictureInPicture => "picture_in_picture_alt", PlayArrow => "play_arrow",
+PlaylistAdd => "playlist_add", PlaylistPlay => "playlist_play", QueueMusic => "queue_music",
+Refresh => "refresh", Repeat => "repeat", RepeatOne => "repeat_one",
+RestartAlt => "restart_alt", Search => "search", SearchOff => "search_off",
+Sensors => "sensors", Settings => "settings", Shuffle => "shuffle", SkipNext => "skip_next",
+SkipPrevious => "skip_previous", Subtitles => "subtitles", Tune => "tune",
+UploadFile => "upload_file", VolumeDown => "volume_down", VolumeOff => "volume_off",
+VolumeUp => "volume_up", Minimize => "remove", Maximize => "crop_square",
+Restore => "filter_none", }
 
 impl Icon {
     pub fn glyph(self) -> char {

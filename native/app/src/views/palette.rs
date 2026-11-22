@@ -320,7 +320,7 @@ impl App {
             }
             list = list.push(
                 mouse_area(
-                    button(line)
+                    button(container(line).center_y(Length::Fill))
                         .width(Length::Fill)
                         .height(48)
                         .padding([0, 12])

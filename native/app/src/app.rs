@@ -5,7 +5,7 @@ use iced::widget::{column, container, image, mouse_area, row, stack, text, Space
 use iced::window::{self, Direction};
 use iced::{event, keyboard, mouse, Element, Length, Point, Size, Subscription, Task, Theme};
 use mosaic_audio::Engine;
-use mosaic_core::model::{Config, Repeat, Settings, Store};
+use mosaic_core::model::{Repeat, Settings, Store};
 use mosaic_core::storage::{Dirs, Saver};
 use mosaic_services::Services;
 
@@ -33,7 +33,6 @@ const MAC_INSET: f32 = 92.0;
 
 pub struct Flags {
     pub dirs: Dirs,
-    pub config: Arc<Mutex<Config>>,
     pub store: Store,
     pub services: Services,
     pub engine: Option<Engine>,
@@ -41,6 +40,8 @@ pub struct Flags {
     pub media: Option<mosaic_platform::media_controls::Media>,
     pub tray: Option<mosaic_platform::tray::Tray>,
     pub files: Vec<std::path::PathBuf>,
+    pub migrated: bool,
+    pub reset_window: bool,
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<std::path::PathBuf>,
     pub debug_view: Option<String>,
@@ -86,15 +87,14 @@ pub enum Message {
     External(External),
     Nav(View),
     Frame(Instant),
-    Tick(Instant),
+    Tick,
     PollImages,
     ToastTick,
     WindowResized(Size),
-    CloseRequested(window::Id),
+    CloseRequested,
     DragWindow,
     Minimize,
     ToggleMaximize,
-    Maximized(bool),
     ResizeEdge(Direction),
     ResizerPressed(Axis),
     ResizerMoved(Point),
@@ -152,7 +152,6 @@ pub struct App {
     pub(crate) size: Size,
     pub(crate) maximized: bool,
     pub(crate) decorations: bool,
-    pub(crate) dirs: Dirs,
     pub(crate) services: Services,
     pub(crate) store: Store,
     pub(crate) saver: Saver,
@@ -208,7 +207,6 @@ impl App {
             size: Size::new(1280.0, 820.0),
             maximized: false,
             decorations,
-            dirs: flags.dirs,
             services: flags.services,
             player: PlayerController::new(flags.store.settings.clone()),
             store: flags.store,
@@ -254,6 +252,9 @@ impl App {
                 "settings" => View::Settings,
                 _ => View::Discover,
             });
+            if v == "palette" {
+                app.ui.palette_open = true;
+            }
             if v == "nowplaying" {
                 app.ui.now_playing = true;
             }
@@ -265,6 +266,14 @@ impl App {
         if !app.services.config().onboarded.unwrap_or(false) {
             app.begin_onboarding();
         }
+        if flags.reset_window {
+            app.store.settings.bar_height = BAR.2;
+            app.store.settings.side_width = SIDE.2;
+            app.touch();
+        }
+        if flags.migrated {
+            app.toast("Imported your library from the previous version");
+        }
         app.retarget_rail();
         app.refresh_recent();
         let mut tasks = vec![
@@ -272,7 +281,18 @@ impl App {
             app.discover_boot(),
             app.scan(),
             app.spotify_boot(),
+            Task::perform(tokio::time::sleep(Duration::from_secs(5)), |()| {
+                Message::UpdateTimer
+            }),
         ];
+        if !flags.files.is_empty() {
+            let files: Vec<String> = flags
+                .files
+                .iter()
+                .map(|f| f.to_string_lossy().into_owned())
+                .collect();
+            tasks.push(app.open_files(files));
+        }
         let fx = app.player.sync_engine();
         tasks.push(app.run_effects(fx));
         if let Some(session) = app.store.session.clone() {
@@ -876,7 +896,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Tick(_) => self.player_input(PlayerInput::Tick),
+            Message::Tick => self.player_input(PlayerInput::Tick),
             Message::PollImages => Task::none(),
             Message::ToastTick => {
                 let now = self.now;
@@ -888,7 +908,7 @@ impl App {
                 self.retarget_rail();
                 Task::none()
             }
-            Message::CloseRequested(_) => {
+            Message::CloseRequested => {
                 if self.tray.is_some() && self.services.config().close_to_tray() {
                     self.ui.hidden = true;
                     return window::set_mode(self.main, window::Mode::Hidden);
@@ -900,10 +920,6 @@ impl App {
             Message::ToggleMaximize => {
                 self.maximized = !self.maximized;
                 window::toggle_maximize(self.main)
-            }
-            Message::Maximized(on) => {
-                self.maximized = on;
-                Task::none()
             }
             Message::ResizeEdge(direction) => window::drag_resize(self.main, direction),
             Message::ResizerPressed(axis) => {
@@ -1021,8 +1037,15 @@ impl App {
         if ctrl
             && matches!(key.as_ref(), keyboard::Key::Character(c) if c.eq_ignore_ascii_case("k"))
         {
-            self.ui.palette_open = !self.ui.palette_open;
-            return Task::none();
+            return self.open_palette();
+        }
+        if self.ui.palette_open {
+            use crate::views::palette::Msg as P;
+            match key.as_ref() {
+                keyboard::Key::Named(Named::ArrowDown) => return self.on_palette(P::Move(1)),
+                keyboard::Key::Named(Named::ArrowUp) => return self.on_palette(P::Move(-1)),
+                _ => {}
+            }
         }
         if matches!(key.as_ref(), keyboard::Key::Named(Named::Escape)) {
             if self.ui.lyrics.picker.take().is_some() {
@@ -1122,17 +1145,19 @@ impl App {
         self.theme.is_animating()
             || self.anim.is_active(self.now)
             || self.images.is_fading(self.now)
+            || self.viz_active()
+            || (self.player.track.is_some() && (self.player.playing || self.player.loading))
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            window::close_requests().map(Message::CloseRequested),
+            window::close_requests().map(|_| Message::CloseRequested),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             Subscription::run(external_events).map(Message::External),
             event::listen_with(key_events),
         ];
         if self.player.wants_tick() {
-            subs.push(iced::time::every(Duration::from_secs(1)).map(Message::Tick));
+            subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
         if self.needs_frames() {
             subs.push(window::frames().map(Message::Frame));
@@ -1302,11 +1327,7 @@ impl App {
                     Message::ToggleMaximize,
                     false,
                 ))
-                .push(button(
-                    Icon::Close,
-                    Message::CloseRequested(self.main),
-                    true,
-                ));
+                .push(button(Icon::Close, Message::CloseRequested, true));
         }
         container(bar).width(Length::Fill).height(TITLEBAR).into()
     }
@@ -1394,7 +1415,19 @@ impl App {
                 Message::ResizerReset(Axis::Horizontal),
             ),
         ];
-        column![body, gap, bar]
+        let mut layout = column![];
+        if let Some(message) = &self.engine_error {
+            layout = layout.push(
+                container(text(message.clone()).size(14))
+                    .padding([10, 16])
+                    .width(Length::Fill)
+                    .style(styles::error_box(p)),
+            );
+        }
+        layout
+            .push(body)
+            .push(gap)
+            .push(bar)
             .padding(iced::Padding {
                 top: TITLEBAR,
                 right: 16.0,
@@ -1410,6 +1443,12 @@ fn key_events(event: iced::Event, status: event::Status, _: window::Id) -> Optio
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => Some(
             Message::Key(key, modifiers, status == event::Status::Captured),
         ),
+        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::Cursor(position))
+        }
+        iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHovered(true)),
+        iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHovered(false)),
+        iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
         _ => None,
     }
 }

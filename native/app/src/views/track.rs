@@ -435,7 +435,7 @@ impl App {
                         .push(Space::new().width(Length::Fill))
                         .push(icon(Icon::ChevronRight, 20.0).color(p.on_surface_variant));
                 }
-                button(r)
+                button(container(r).center_y(Length::Fill))
                     .width(Length::Fill)
                     .height(40)
                     .padding([0, 12])
@@ -508,6 +508,24 @@ impl App {
                     true,
                 ));
             height += 56.0 + 9.0 + 40.0 * 5.0 + 9.0;
+            if t.source == Source::Spotify && t.artist_id.is_some() {
+                items = items.push(item(
+                    icon(Icon::Person, 20.0),
+                    "Go to artist".into(),
+                    MenuAction::GoArtist,
+                    false,
+                ));
+                height += 40.0;
+            }
+            if t.source == Source::Spotify && t.album_id.is_some() {
+                items = items.push(item(
+                    icon(Icon::Album, 20.0),
+                    "Go to album".into(),
+                    MenuAction::GoAlbum,
+                    false,
+                ));
+                height += 40.0;
+            }
             if t.source == Source::SoundCloud {
                 items = items.push(item(
                     icon(Icon::Sensors, 20.0),
@@ -583,6 +601,8 @@ impl App {
                 };
                 if self.is_active(&track) {
                     self.player_input(PlayerInput::Toggle)
+                } else if r.list == ListRef::Queue {
+                    self.player_input(PlayerInput::PlayIndex(r.index))
                 } else {
                     self.player_input(PlayerInput::Play(track, Some(list)))
                 }

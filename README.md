@@ -2,14 +2,15 @@
 
 ![mosaic](docs/hero.webp)
 
-a desktop music player for soundcloud and your own files. electron + next.js, material you look.
+a desktop music player for soundcloud and your own files. native rust (iced), material you look, first-class linux support, still works on windows and macos.
 
 - play soundcloud (no api key) and local folders in one queue
 - word-by-word lyrics from lrclib, with a picker for other versions
 - playlists, plus import from spotify links
-- equalizer, sleep timer, mini player, discord rich presence
+- crossfade, gapless-ish transitions, equalizer, speed with pitch kept, sleep timer, mini player, discord rich presence
 - colors follow the album art
-- beta (settings > beta): spotify and youtube playback, artist and album pages, genius lyrics
+- media keys and the system media widget through mpris (linux), smtc (windows) and now playing (macos)
+- beta (settings > beta): spotify browsing and playback, artist and album pages, genius lyrics
 
 <table>
   <tr>
@@ -18,21 +19,43 @@ a desktop music player for soundcloud and your own files. electron + next.js, ma
   </tr>
 </table>
 
-## run it
+## build it
+
+the native app lives in `native/` (the old electron app is still in the repo root until you run the steps in `MIGRATION.md`).
 
 ```
-npm install
-npm run dev
+cd native
+cargo run --release -p mosaic
 ```
 
-`npm run dist` builds a windows installer, `npm run dist:mac` a dmg. press ctrl+k in the app for everything else.
+you need a recent stable rust. on linux also `pkg-config`, alsa headers (`libasound2-dev` / `alsa-lib`), `libxkbcommon-dev` and `libwayland-dev`. press ctrl+k in the app for everything else.
+
+`cargo packager --release` makes an appimage and a .deb on linux, an nsis installer on windows and a dmg on macos. a flatpak manifest and a gentoo ebuild are in `native/packaging/`.
+
+`cargo build --no-default-features` leaves out the spotify player (librespot); spotify tracks then show as unavailable but browsing and import still work.
+
+## linux notes
+
+- audio goes through alsa via cpal; pipewire and pulseaudio provide the alsa shim, so `libasound2` / `alsa-lib` is the only runtime dependency
+- wayland has no client-controlled always-on-top, so the mini player only stays on top on x11 and on compositors that allow it
+- the window draws its own title bar. on a tiling wm start it with `MOSAIC_DECORATIONS=1` to use the compositor's decorations instead
+- the tray needs a statusnotifier host (kde, or gnome with the appindicator extension). without one, closing the window quits instead of hiding to the tray, and settings says so
+- `MOSAIC_REDUCED_MOTION=1` turns off animations, `MOSAIC_LOG=debug` turns up logging (`~/.cache/mosaic/mosaic.log`)
+- data lives in `~/.local/share/mosaic`. on first launch your library from an earlier electron install is imported from `~/.config/Mosaic`
+
+## what changed from the electron version
+
+- **youtube is gone.** it needed a browser to play; saved youtube tracks show as unavailable
+- **spotify playback now uses librespot**, an unofficial client. it needs premium and signs in with spotify's own login; browsing, search and playlist import still use your own client id. the widevine / castlabs electron setup is no longer needed
+- importing a spotify playlist reads the public embed (first 100 tracks). connect spotify in settings > beta to import longer or private ones
+- low memory mode and the chromium performance options are gone (nothing to tune)
+- the live backdrop blur is replaced by a pre-blurred copy of the album art, and lyric lines fade instead of blur
+
+`native/DECISIONS.md` lists every other deliberate difference.
 
 ## notes
 
 - soundcloud access is unofficial and can break. personal use only.
+- spotify playback through librespot is unofficial and may violate spotify's terms. use at your own risk.
 - not affiliated with soundcloud, spotify, discord or lrclib.
-
-## more notes
 - dont bug report, jsut make pr :3
-- works on windows 10 and macOS
-- beta features (settings > beta): spotify, youtube, genius lyrics. spotify needs premium and your own client id, youtube needs your own google oauth client. spotify playback needs widevine, so mosaic ships on castlabs electron. to play spotify from source on mac sign it once: `python3 -m castlabs_evs.vmp sign-pkg node_modules/electron/dist` 

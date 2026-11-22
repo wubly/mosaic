@@ -29,13 +29,6 @@ impl Sleep {
     pub fn is_end_of_track(&self) -> bool {
         *self == Sleep::EndOfTrack
     }
-
-    pub fn seconds_left(&self) -> u64 {
-        match self {
-            Sleep::Timer { left, .. } => *left,
-            _ => 0,
-        }
-    }
 }
 
 impl PlayerController {

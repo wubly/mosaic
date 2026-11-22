@@ -671,7 +671,7 @@ fn sleep_timer_counts_down_and_fades_out() {
     assert_eq!(toasts(&fx), ["Sleep timer set for 1 min"]);
     h.advance(30);
     h.send(PlayerInput::Tick);
-    assert_eq!(h.c.sleep.seconds_left(), 30);
+    assert!(matches!(h.c.sleep, Sleep::Timer { left: 30, .. }));
 
     h.advance(30);
     let fx = h.send(PlayerInput::Tick);
