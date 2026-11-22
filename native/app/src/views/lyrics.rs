@@ -1,11 +1,12 @@
 //! Port of `LyricsPanel.js` and `LyricsPicker.js`. Synced lyrics only; the playing line lights up
 //! as a whole (word timing is too often off to sweep through a line).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use iced::widget::{
-    button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space,
+    button, column, container, mouse_area, responsive, row, scrollable, stack, text, text_input,
+    Space,
 };
 use iced::{Alignment, Element, Font, Length, Task};
 use mosaic_core::lyrics_timing::{build_timings, LyricLine, WordTiming};
@@ -17,7 +18,7 @@ use super::artwork_of;
 use super::common;
 use crate::app::{App, Message};
 use crate::text_measure;
-use crate::theme::{alpha, mix, styles, Palette};
+use crate::theme::{alpha, styles, Palette};
 use crate::widgets::icon::{icon, outlined, Icon};
 
 pub const SCROLL_ID: &str = "lyrics-scroll";
@@ -48,6 +49,14 @@ impl Variant {
             Variant::Panel => 30.0,
             Variant::Large => 46.0,
             Variant::Bare => 28.0,
+        }
+    }
+
+    fn slot(self) -> usize {
+        match self {
+            Variant::Panel => 0,
+            Variant::Large => 1,
+            Variant::Bare => 2,
         }
     }
 
@@ -98,6 +107,10 @@ pub struct State {
     pub lyrics: Option<Lyrics>,
     pub timings: Vec<Vec<WordTiming>>,
     pub active: isize,
+    /// The lyrics viewport's height per variant, as last laid out (0 until then).
+    measured: [Cell<f32>; 3],
+    /// The viewport height the current scroll target was worked out for.
+    scrolled_for: f32,
     pub picker: Option<Picker>,
     /// word widths per font size, filled on first use.
     widths: RefCell<HashMap<u32, Widths>>,
@@ -106,6 +119,17 @@ pub struct State {
 /// Index of the line playing at `t`, or -1 before the first line.
 pub fn active_line(lines: &[LyricLine], t: f64) -> isize {
     lines.partition_point(|l| l.t <= t) as isize - 1
+}
+
+/// How far from the viewport's top or bottom lines start fading out.
+const EDGE_FADE: f32 = 96.0;
+
+/// 1 inside the viewport, easing to 0 as a line's middle (`mid`, in viewport pixels) reaches
+/// either edge.
+pub fn edge_fade(mid: f32, view_h: f32, band: f32) -> f32 {
+    let room = mid.min(view_h - mid);
+    let t = (room / band).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 pub fn line_opacity(distance: f32) -> f32 {
@@ -216,6 +240,18 @@ impl App {
             .max(120.0)
     }
 
+    /// The lyrics viewport's height: as laid out, or estimated from the window before that.
+    fn lyrics_view_height(&self, v: Variant) -> f32 {
+        let measured = self.ui.lyrics.measured[v.slot()].get();
+        if measured > 0.0 {
+            measured
+        } else if v == Variant::Large {
+            self.size.height - 40.0 - 200.0
+        } else {
+            self.lyrics_box_height()
+        }
+    }
+
     pub(crate) fn lyrics_avail_width(&self, v: Variant) -> f32 {
         match v {
             Variant::Panel => self.settings().side_width as f32 - 56.0,
@@ -233,17 +269,17 @@ impl App {
         }
         let t = self.display_position() + LOOKAHEAD;
         let i = active_line(st.lines(), t);
+        let view_h = self.lyrics_view_height(v);
         let mut task = Task::none();
-        if i != st.active {
-            self.ui.lyrics.active = i;
-            self.anim.spring("lyr-pos", i as f32, 170.0, 26.0);
+        let resized = (view_h - st.scrolled_for).abs() > 1.0;
+        if i != st.active || resized {
+            if i != st.active {
+                self.ui.lyrics.active = i;
+                self.anim.spring("lyr-pos", i as f32, 170.0, 26.0);
+            }
+            self.ui.lyrics.scrolled_for = view_h;
             let boxes = self.ui.lyrics.line_boxes(v, self.lyrics_avail_width(v));
             if let Some((top, h)) = boxes.get(i.max(0) as usize) {
-                let view_h = if v == Variant::Large {
-                    self.size.height - 40.0 - 200.0
-                } else {
-                    self.lyrics_box_height()
-                };
                 let pad = box_padding(v, view_h).0;
                 let target = pad + top + h / 2.0 - view_h / 2.0;
                 self.anim.spring("lyr-scroll", target.max(0.0), 170.0, 28.0);
@@ -422,13 +458,23 @@ impl App {
         let pos = self.anim.value("lyr-pos", st.active as f32);
         let size = v.font_size();
         let h = v.line_height();
+        // Where each line sits in the viewport while the view follows the playhead, so lines
+        // fade out towards the top and bottom edges instead of being cut off flat.
+        let view_h = self.lyrics_view_height(v);
+        let scroll_y = self.anim.value("lyr-scroll", 0.0);
+        let pad = box_padding(v, view_h).0;
+        let boxes = st.line_boxes(v, self.lyrics_avail_width(v));
         let mut col = column![].width(Length::Fill);
         for (i, line) in st.lines().iter().enumerate() {
             let distance = (i as f32 - pos).abs();
             // The playing line is fully lit; the glow eases between lines as `pos` springs.
             let lit = (1.0 - distance).clamp(0.0, 1.0);
             let op = line_opacity(distance);
-            let color = alpha(p.on_surface, (0.42 + 0.58 * lit) * op.max(lit));
+            let edge = boxes.get(i).map_or(1.0, |(top, bh)| {
+                let mid = pad + top + bh / 2.0 - scroll_y;
+                edge_fade(mid, view_h, EDGE_FADE)
+            });
+            let color = alpha(p.on_surface, (0.42 + 0.58 * lit) * op.max(lit) * edge);
             let mut words = iced::widget::Row::new().spacing(space).width(Length::Fill);
             for w in &st.timings[i] {
                 words = words.push(
@@ -467,11 +513,7 @@ impl App {
 
     pub(crate) fn lyrics_body(&self, v: Variant, p: Palette) -> Element<'_, Message> {
         let st = &self.ui.lyrics;
-        let view_h = if v == Variant::Large {
-            self.size.height - 40.0 - 200.0
-        } else {
-            self.lyrics_box_height()
-        };
+        let view_h = self.lyrics_view_height(v);
         let (top, bottom) = box_padding(v, view_h);
         let body: Element<'_, Message> = match &st.lyrics {
             None => text("Finding lyrics…")
@@ -528,43 +570,17 @@ impl App {
             s
         })
         .height(Length::Fill);
-        // Lines fade into a soft shadow at the edges instead of being cut off flat.
-        let shade = match v {
-            Variant::Large => mix(p.surface, iced::Color::TRANSPARENT, 0.5),
-            _ => mix(p.surface, iced::Color::TRANSPARENT, 0.6),
-        };
-        let edge = |down: bool, height: f32| {
-            let (from, to) = if down {
-                (shade, iced::Color::TRANSPARENT)
-            } else {
-                (iced::Color::TRANSPARENT, shade)
-            };
-            container(Space::new())
-                .width(Length::Fill)
-                .height(height)
-                .style(move |_| container::Style {
-                    background: Some(iced::Background::Gradient(
-                        iced::gradient::Linear::new(std::f32::consts::PI)
-                            .add_stop(0.0, from)
-                            .add_stop(1.0, to)
-                            .into(),
-                    )),
-                    ..container::Style::default()
-                })
-        };
         let scroll = crate::widgets::smooth::smooth(scroll);
-        if st.lines().is_empty() {
-            return scroll;
-        }
+        // Lines far from the playing one are already faint, so the edges need no overlay (a
+        // flat shade can't match the artwork gradient behind it and shows as a dark band).
+        // The sensor records the real viewport height for centring the playing line.
+        let measured = &st.measured[v.slot()];
         stack![
             scroll,
-            column![
-                edge(true, 48.0),
-                Space::new().height(Length::Fill),
-                edge(false, 72.0),
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill),
+            responsive(move |size| {
+                measured.set(size.height);
+                Space::new().into()
+            }),
         ]
         .into()
     }
@@ -882,6 +898,15 @@ mod tests {
         assert_eq!(active_line(&lines, 6.0), 1);
         assert_eq!(active_line(&lines, 99.0), 2);
         assert_eq!(active_line(&[], 3.0), -1);
+    }
+
+    #[test]
+    fn lines_fade_out_at_the_viewport_edges() {
+        assert_eq!(edge_fade(300.0, 600.0, 96.0), 1.0);
+        assert_eq!(edge_fade(0.0, 600.0, 96.0), 0.0);
+        assert_eq!(edge_fade(600.0, 600.0, 96.0), 0.0);
+        let near = edge_fade(30.0, 600.0, 96.0);
+        assert!(near > 0.0 && near < 0.5, "{near}");
     }
 
     #[test]
