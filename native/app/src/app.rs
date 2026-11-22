@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use crate::resolve::resolve_stream;
 use crate::theme::{
     palette_from_seed, seed_from_rgba, styles, DynamicTheme, Palette, DEFAULT_SEED,
 };
+use crate::views::common;
 use crate::widgets::icon::{icon, Icon};
 use crate::widgets::resizer::{resizer, Axis};
 use crate::widgets::toast;
@@ -25,11 +27,14 @@ use crate::widgets::{logo, rail};
 
 pub use rail::View;
 
-const BAR: (f64, f64, f64) = (80.0, 200.0, 100.0);
+const BAR: (f64, f64, f64) = (88.0, 200.0, 100.0);
 const SIDE: (f64, f64, f64) = (280.0, 560.0, 360.0);
 const EDGE: f32 = 6.0;
 const TITLEBAR: f32 = 40.0;
 const MAC_INSET: f32 = 92.0;
+/// Fade-through timings: the old page fades out quickly, the new one eases in.
+const PAGE_OUT_MS: u64 = 90;
+const PAGE_IN_MS: u64 = 320;
 
 pub struct Flags {
     pub dirs: Dirs,
@@ -74,7 +79,6 @@ pub enum Message {
     Track(crate::views::track::Msg),
     Discover(crate::views::discover::Msg),
     Palette(crate::views::palette::Msg),
-    Cursor(Point),
     Scanned(Result<Vec<mosaic_core::model::Track>, String>),
     Opened(Vec<mosaic_core::model::Track>, Vec<String>),
     SeekFraction(f32),
@@ -85,6 +89,10 @@ pub enum Message {
     ToggleLyrics,
     Tune(crate::views::tune::Msg),
     External(External),
+    /// The main window is up: start the tray and media controls (macOS/Windows only). Carries
+    /// the window's HWND on Windows.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    PlatformReady(Option<isize>),
     Nav(View),
     Frame(Instant),
     Tick,
@@ -107,12 +115,14 @@ pub enum Message {
         src: String,
         seed: Option<material_colors::color::Rgb>,
         ambient: Option<Arc<::image::RgbaImage>>,
+        /// The ambient backdrop is bright enough to need the light scheme.
+        light: bool,
     },
 }
 
 pub(crate) struct Toast {
-    id: u64,
     message: String,
+    born: Instant,
     expires: Instant,
 }
 
@@ -127,6 +137,8 @@ pub(crate) struct Ui {
     pub(crate) now_playing: bool,
     pub(crate) mini: bool,
     pub(crate) tune: Option<crate::views::tune::Tab>,
+    /// The tab shown while the popover animates closed.
+    pub(crate) tune_last: crate::views::tune::Tab,
     pub(crate) discover: crate::views::discover::State,
     pub(crate) menu: Option<crate::views::track::MenuState>,
     pub(crate) palette: crate::views::palette::State,
@@ -145,6 +157,8 @@ pub(crate) struct Ui {
     pub(crate) dropped: Vec<std::path::PathBuf>,
     pub(crate) drop_hover: bool,
     pub(crate) drop_seq: u64,
+    /// A navigation waiting for the current page to fade out.
+    pub(crate) nav: Option<View>,
 }
 
 pub struct App {
@@ -184,6 +198,24 @@ pub struct App {
     pub(crate) pos_at: Instant,
     pub(crate) epoch: Instant,
     pub(crate) debug_screenshot: Option<std::path::PathBuf>,
+}
+
+/// The Win32 HWND behind an iced window, for SMTC. `None` everywhere else.
+#[cfg(not(target_os = "linux"))]
+fn native_hwnd(w: &dyn window::Window) -> Option<isize> {
+    #[cfg(windows)]
+    {
+        use window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = w;
+        None
+    }
 }
 
 fn clamp(v: f64, (lo, hi, _): (f64, f64, f64)) -> f64 {
@@ -266,6 +298,8 @@ impl App {
         if !app.services.config().onboarded.unwrap_or(false) {
             app.begin_onboarding();
         }
+        // Older builds allowed a shorter bar than the controls fit in.
+        app.store.settings.bar_height = clamp(app.store.settings.bar_height, BAR);
         if flags.reset_window {
             app.store.settings.bar_height = BAR.2;
             app.store.settings.side_width = SIDE.2;
@@ -276,8 +310,14 @@ impl App {
         }
         app.retarget_rail();
         app.refresh_recent();
+        #[cfg(target_os = "linux")]
+        let open = open.discard();
+        #[cfg(not(target_os = "linux"))]
+        let open = open
+            .then(move |_| window::run(main, native_hwnd))
+            .map(Message::PlatformReady);
         let mut tasks = vec![
-            open.discard(),
+            open,
             app.discover_boot(),
             app.scan(),
             app.spotify_boot(),
@@ -325,6 +365,11 @@ impl App {
         self.ui.view.unwrap_or(View::Discover)
     }
 
+    /// The view the rail shows as selected (a pending navigation counts).
+    fn rail_view(&self) -> View {
+        self.ui.nav.unwrap_or_else(|| self.view_kind())
+    }
+
     pub(crate) fn palette(&self) -> Palette {
         self.theme.current
     }
@@ -339,8 +384,38 @@ impl App {
     }
 
     pub(crate) fn retarget_rail(&mut self) {
-        let y = rail::pill_y(self.view_kind(), self.spotify_enabled(), self.rail_height());
+        let y = rail::pill_y(self.rail_view(), self.spotify_enabled(), self.rail_height());
         self.anim.spring("rail-pill", y, 500.0, 36.0);
+    }
+
+    /// Eases the page area in after a navigation (the second half of a fade-through).
+    pub(crate) fn page_transition(&mut self) {
+        let now = Instant::now();
+        self.anim
+            .tween("page", 0.0, now, Duration::ZERO, Ease::Linear);
+        self.anim.tween(
+            "page",
+            1.0,
+            now,
+            Duration::from_millis(PAGE_IN_MS),
+            Ease::Decelerate,
+        );
+    }
+
+    /// Switches to `view` once the current page has faded out.
+    fn apply_nav(&mut self, view: View) -> Task<Message> {
+        self.ui.view = Some(view);
+        self.ui.scroll.0 = 0.0;
+        if view == View::Library {
+            self.ui.library.open = None;
+        }
+        self.retarget_rail();
+        self.page_transition();
+        match view {
+            View::Spotify => self.spotify_ensure_loaded(),
+            View::Queue => self.on_spotify(crate::views::spotify::Msg::PollQueue),
+            _ => Task::none(),
+        }
     }
 
     pub(crate) fn touch(&mut self) {
@@ -350,8 +425,8 @@ impl App {
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
         self.toast_seq += 1;
         self.toasts.push(Toast {
-            id: self.toast_seq,
             message: message.into(),
+            born: self.now,
             expires: self.now + Duration::from_millis(toast::LIFETIME_MS),
         });
         let extra = self.toasts.len().saturating_sub(toast::MAX);
@@ -368,17 +443,14 @@ impl App {
     pub(crate) fn player_input(&mut self, input: PlayerInput) -> Task<Message> {
         let before = self.player.track.as_ref().map(|t| t.id.clone());
         let was_playing = self.player.playing;
-        let was_spotify = self
-            .player
-            .track
-            .as_ref()
-            .is_some_and(|t| t.source == mosaic_core::model::Source::Spotify);
+        let was_spotify = self.playing_spotify();
+        let volume = self.settings().volume;
         let fx = self.player.handle(input, Instant::now());
+        let after = self.player.track.as_ref().map(|t| t.id.clone());
         let task = Task::batch([
             self.run_effects(fx),
-            self.sync_spotify(was_playing, was_spotify),
+            self.sync_spotify(before == after, was_playing, was_spotify, volume),
         ]);
-        let after = self.player.track.as_ref().map(|t| t.id.clone());
         let busy = self.player.playing && !self.player.loading;
         let now = Instant::now();
         self.anim.tween(
@@ -400,39 +472,51 @@ impl App {
         task
     }
 
-    /// Keeps librespot's play state in step with the deck.
-    fn sync_spotify(&mut self, was_playing: bool, was_spotify: bool) -> Task<Message> {
+    /// Keeps the Spotify backend's play state and volume in step with the deck. Play/pause
+    /// only follows a change on the same track: a track change loads (or adopts) on its own,
+    /// and pausing in between would cut off a track Spotify already moved on to.
+    fn sync_spotify(
+        &mut self,
+        same_track: bool,
+        was_playing: bool,
+        was_spotify: bool,
+        volume_before: f64,
+    ) -> Task<Message> {
         #[cfg(feature = "spotify")]
         {
-            let is_spotify = self
-                .player
-                .track
-                .as_ref()
-                .is_some_and(|t| t.source == mosaic_core::model::Source::Spotify);
+            let is_spotify = self.playing_spotify();
             let playing = self.player.playing;
+            let volume = self.settings().volume;
             let action = if was_spotify && !is_spotify {
                 Some(0)
-            } else if is_spotify && playing != was_playing {
+            } else if is_spotify && same_track && playing != was_playing && !self.player.loading {
                 Some(if playing { 1 } else { 2 })
             } else {
                 None
             };
-            if let Some(action) = action {
+            let set_volume = is_spotify && (!same_track || volume != volume_before);
+            if action.is_some() || set_volume {
                 let services = self.services.clone();
                 return Task::future(async move {
-                    if let Ok(pb) = services.spotify_playback().await {
-                        match action {
-                            0 => pb.stop(),
-                            1 => pb.resume(),
-                            _ => pb.pause(),
-                        }
+                    // Never start a backend here: loading a track does that.
+                    let Some(pb) = services.spotify_playback_current().await else {
+                        return;
+                    };
+                    if set_volume {
+                        pb.set_volume(volume);
+                    }
+                    match action {
+                        Some(0) => pb.stop(),
+                        Some(1) => pb.resume(),
+                        Some(_) => pb.pause(),
+                        None => {}
                     }
                 })
                 .discard();
             }
         }
         #[cfg(not(feature = "spotify"))]
-        let _ = (was_playing, was_spotify);
+        let _ = (same_track, was_playing, was_spotify, volume_before);
         Task::none()
     }
 
@@ -482,17 +566,21 @@ impl App {
                         src,
                         seed: None,
                         ambient: None,
+                        light: false,
                     };
                 };
-                let (seed, ambient) = tokio::task::spawn_blocking(move || {
-                    (seed_from_rgba(art.as_raw()), ambient::render(&art))
+                let (seed, ambient, light) = tokio::task::spawn_blocking(move || {
+                    let ambient = ambient::render(&art);
+                    let light = crate::theme::is_light(ambient.as_raw());
+                    (seed_from_rgba(art.as_raw()), ambient, light)
                 })
                 .await
-                .unwrap_or((None, ::image::RgbaImage::new(1, 1)));
+                .unwrap_or((None, ::image::RgbaImage::new(1, 1), false));
                 Message::ThemeArt {
                     src,
                     seed,
                     ambient: Some(Arc::new(ambient)),
+                    light,
                 }
             },
             |m| m,
@@ -546,6 +634,7 @@ impl App {
                 Effect::RecordPlay(track) => {
                     self.store
                         .record_play(&track, chrono::Utc::now().timestamp_millis());
+                    self.refresh_recent();
                     self.touch();
                 }
                 Effect::AddSeconds(track, secs) => {
@@ -729,6 +818,7 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         self.now = Instant::now();
         let task = self.handle(message);
+        self.sync_presence();
         Task::batch([task, self.image_requests()])
     }
 
@@ -745,9 +835,23 @@ impl App {
                 self.player_input(PlayerInput::Engine(event))
             }
             Message::External(External::Media(cmd)) => self.on_media(cmd),
+            Message::External(External::SpotifyMoved { from, to }) => {
+                self.on_spotify(crate::views::spotify::Msg::Moved { from, to })
+            }
             Message::Nop => Task::none(),
             Message::Settings(msg) => self.on_settings(msg),
             Message::Onboarding(msg) => self.on_onboarding(msg),
+            Message::PlatformReady(hwnd) => {
+                if self.media.is_none() {
+                    self.media = crate::start_media(hwnd);
+                    self.media_track = None;
+                }
+                if self.tray.is_none() {
+                    self.tray = crate::start_tray();
+                    self.tray_available = self.tray.is_some();
+                }
+                Task::none()
+            }
             Message::UpdateTimer => Task::batch([
                 self.check_update(),
                 Task::perform(tokio::time::sleep(mosaic_services::update::RECHECK), |()| {
@@ -811,11 +915,6 @@ impl App {
             Message::Track(msg) => self.on_track(msg),
             Message::Discover(msg) => self.on_discover(msg),
             Message::Palette(msg) => self.on_palette(msg),
-            Message::Cursor(p) => {
-                self.cursor = p;
-                self.reorder_moved();
-                Task::none()
-            }
             Message::Opened(tracks, paths) => {
                 let first = tracks
                     .iter()
@@ -863,12 +962,24 @@ impl App {
             }
             Message::Tune(msg) => self.on_tune(msg),
             Message::Nav(view) => {
-                self.ui.view = Some(view);
-                self.ui.scroll.0 = 0.0;
-                if view == View::Library {
-                    self.ui.library.open = None;
+                if crate::anim::reduced_motion()
+                    || (view == self.view_kind() && self.ui.nav.is_none())
+                {
+                    return self.apply_nav(view);
                 }
-                self.retarget_rail();
+                // Fade-through: the current page fades out, then the new one eases in. The rail
+                // pill heads for the new item straight away.
+                self.ui.nav = Some(view);
+                let y = rail::pill_y(view, self.spotify_enabled(), self.rail_height());
+                self.anim.spring("rail-pill", y, 500.0, 36.0);
+                let now = Instant::now();
+                self.anim.tween(
+                    "page",
+                    0.0,
+                    now,
+                    Duration::from_millis(PAGE_OUT_MS),
+                    Ease::Linear,
+                );
                 Task::none()
             }
             Message::Screenshot(shot) => {
@@ -886,6 +997,12 @@ impl App {
             Message::Frame(now) => {
                 self.now = now;
                 self.anim.tick(now);
+                if let Some(view) = self.ui.nav {
+                    if !self.anim.is_active(now) || self.anim.value("page", 0.0) <= 0.001 {
+                        self.ui.nav = None;
+                        return self.apply_nav(view);
+                    }
+                }
                 self.theme.tick(now);
                 self.viz_tick();
                 if self.ambient_prev.is_some() && self.anim.value("ambient", 1.0) >= 1.0 {
@@ -900,7 +1017,7 @@ impl App {
             Message::PollImages => Task::none(),
             Message::ToastTick => {
                 let now = self.now;
-                self.toasts.retain(|t| t.expires > now);
+                self.toasts.retain(|t| toast::visible(t.expires, now));
                 Task::none()
             }
             Message::WindowResized(size) => {
@@ -927,6 +1044,10 @@ impl App {
                 Task::none()
             }
             Message::ResizerMoved(point) => {
+                if self.ui.reorder.is_some() {
+                    self.cursor = point;
+                    self.reorder_moved();
+                }
                 match self.drag {
                     Some(Axis::Horizontal) => {
                         let bar = clamp(
@@ -965,22 +1086,25 @@ impl App {
             Message::Key(key, modifiers, captured) => self.on_key(&key, modifiers, captured),
             Message::ArtLoaded(key, result) => {
                 if let Ok(img) = result {
-                    let handle =
-                        image::Handle::from_rgba(img.width(), img.height(), img.as_raw().clone());
+                    let handle = ImageCache::handle_for(img);
                     self.images.insert(key, handle, self.now);
                 }
                 Task::none()
             }
-            Message::ThemeArt { src, seed, ambient } => {
+            Message::ThemeArt {
+                src,
+                seed,
+                ambient,
+                light,
+            } => {
                 if src != self.art_src && !self.is_debug_theme(&src) {
                     return Task::none();
                 }
-                let palette = palette_from_seed(seed.unwrap_or(DEFAULT_SEED));
+                let palette = crate::theme::scheme_from_seed(seed.unwrap_or(DEFAULT_SEED), light);
                 self.theme.remember(src, palette);
                 self.theme.transition_to(palette, self.now);
                 if let Some(img) = ambient {
-                    let handle =
-                        image::Handle::from_rgba(img.width(), img.height(), img.as_raw().clone());
+                    let handle = ImageCache::handle_for(img);
                     self.ambient_prev = self.ambient.take();
                     self.ambient = Some(AmbientLayer { handle });
                     self.anim
@@ -999,12 +1123,12 @@ impl App {
     }
 
     fn on_tune(&mut self, msg: crate::views::tune::Msg) -> Task<Message> {
-        use crate::views::tune::{apply_eq, Msg, Tab};
+        use crate::views::tune::{apply_eq, Msg};
         match msg {
             Msg::Toggle => {
                 self.ui.tune = match self.ui.tune {
                     Some(_) => None,
-                    None => Some(Tab::Equalizer),
+                    None => Some(self.ui.tune_last),
                 };
                 Task::none()
             }
@@ -1013,7 +1137,16 @@ impl App {
                 Task::none()
             }
             Msg::Tab(tab) => {
+                if let Some(old) = self.ui.tune.filter(|old| *old != tab) {
+                    let dir = (crate::views::tune::tab_index(tab)
+                        - crate::views::tune::tab_index(old))
+                    .signum();
+                    self.anim.reset("tune-dir", dir, 1.0, 1.0);
+                    self.anim.reset("tune-pane", 0.0, 260.0, 30.0);
+                    self.anim.spring("tune-pane", 1.0, 260.0, 30.0);
+                }
                 self.ui.tune = Some(tab);
+                self.ui.tune_last = tab;
                 Task::none()
             }
             Msg::Speed(v) => self.player_input(PlayerInput::SetSpeed(v)),
@@ -1143,7 +1276,9 @@ impl App {
 
     fn needs_frames(&self) -> bool {
         self.theme.is_animating()
+            || self.ui.nav.is_some()
             || self.anim.is_active(self.now)
+            || !self.toasts.is_empty()
             || self.images.is_fading(self.now)
             || self.viz_active()
             || (self.player.track.is_some() && (self.player.playing || self.player.loading))
@@ -1166,10 +1301,16 @@ impl App {
             subs.push(event::listen_with(drag_events));
         }
         if self.images.has_wanted() {
-            subs.push(iced::time::every(Duration::from_millis(30)).map(|_| Message::PollImages));
+            subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::PollImages));
         }
         if !self.toasts.is_empty() {
             subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::ToastTick));
+        }
+        if self.view_kind() == View::Queue && self.playing_spotify() {
+            subs.push(
+                iced::time::every(Duration::from_secs(4))
+                    .map(|_| Message::Spotify(crate::views::spotify::Msg::PollQueue)),
+            );
         }
         Subscription::batch(subs)
     }
@@ -1182,33 +1323,43 @@ impl App {
             stack![self.mini_view(p), self.titlebar(p)]
         } else {
             let mut base = stack![self.ambient_view(p), self.shell(p)];
-            if self.ui.now_playing && self.player.track.is_some() {
-                base = base.push(self.now_playing_view(p));
+            let np = self.ui.now_playing && self.player.track.is_some();
+            if let Some(t) = self.overlay("pres-now", np) {
+                base = base.push(common::fade_up(
+                    self.now_playing_view(p),
+                    t,
+                    16.0,
+                    p.surface,
+                ));
             }
             base.push(self.titlebar(p))
         };
         if !self.decorations && !self.maximized {
             layers = layers.push(self.edges());
         }
-        let messages: Vec<(u64, String)> = self
+        let messages: Vec<toast::Shown> = self
             .toasts
             .iter()
-            .map(|t| (t.id, t.message.clone()))
+            .map(|t| toast::Shown {
+                message: t.message.clone(),
+                t: toast::progress(t.born, t.expires, self.now),
+            })
             .collect();
-        if self.ui.importing {
-            layers = layers.push(self.import_view(p));
+        if let Some(t) = self.overlay("pres-import", self.ui.importing) {
+            layers = layers.push(self.import_view(p, t));
         }
-        if self.ui.drop_hover {
-            layers = layers.push(self.drop_veil(p));
+        if let Some(t) = self.overlay("pres-drop", self.ui.drop_hover) {
+            layers = layers.push(self.drop_veil(p, t));
         }
         if let Some(menu) = &self.ui.menu {
             layers = layers.push(self.track_menu(menu, p));
         }
-        if self.ui.palette_open {
-            layers = layers.push(self.palette_view(p));
+        if let Some(t) = self.overlay("pres-palette", self.ui.palette_open) {
+            layers = layers.push(self.palette_view(p, t));
         }
-        if let Some(tab) = self.ui.tune {
-            layers = layers.push(self.tune_overlay(tab, p));
+        if let Some(t) = self.overlay("pres-tune", self.ui.tune.is_some()) {
+            let tab = self.ui.tune.unwrap_or(self.ui.tune_last);
+            layers = layers.push(self.tune_overlay(tab, t, p));
         }
         layers = layers.push(toast::view(&messages, p));
         container(layers)
@@ -1218,23 +1369,22 @@ impl App {
             .into()
     }
 
-    fn drop_veil(&self, p: Palette) -> Element<'_, Message> {
+    fn drop_veil(&self, p: Palette, t: f32) -> Element<'_, Message> {
+        let ink = crate::theme::alpha(p.on_primary_container, t);
         container(
             column![
-                icon(Icon::UploadFile, 56.0).color(p.on_primary_container),
-                text("Drop to add to Mosaic")
-                    .size(26)
-                    .color(p.on_primary_container),
+                icon(Icon::UploadFile, 56.0).color(ink),
+                text("Drop to add to Mosaic").size(26).color(ink),
                 text("Music files and folders are added to your library")
                     .size(14)
-                    .color(p.on_primary_container),
+                    .color(ink),
             ]
             .spacing(8)
             .align_x(iced::Alignment::Center),
         )
         .center(Length::Fill)
         .style(styles::fill(
-            crate::theme::alpha(p.primary_container, 0.88),
+            crate::theme::alpha(p.primary_container, 0.88 * t),
             0.0,
         ))
         .into()
@@ -1306,7 +1456,24 @@ impl App {
         .on_press(Message::DragWindow)
         .on_double_click(Message::ToggleMaximize);
 
-        let mut bar = row![drag].height(TITLEBAR);
+        let mut bar = row![drag].height(TITLEBAR).align_y(iced::Alignment::Center);
+        if self.ui.mini {
+            // The title bar sits over the mini player and swallows its clicks, so the way back
+            // lives here.
+            bar = bar.push(iced::widget::tooltip(
+                iced::widget::button(container(icon(Icon::OpenInFull, 18.0)).center(Length::Fill))
+                    .width(36)
+                    .height(32)
+                    .padding(0)
+                    .style(styles::icon_button(p, false))
+                    .on_press(Message::ToggleMini),
+                container(text("Exit mini player (I)").size(12))
+                    .padding([4, 8])
+                    .style(styles::popup(p, 8.0)),
+                iced::widget::tooltip::Position::Bottom,
+            ));
+            bar = bar.push(Space::new().width(6));
+        }
         if !self.decorations && !cfg!(target_os = "macos") {
             let button = |glyph: Icon, msg: Message, close: bool| {
                 iced::widget::button(container(icon(glyph, 16.0)).center(Length::Fill))
@@ -1366,7 +1533,7 @@ impl App {
         let current = self.view_kind();
 
         let nav = rail::view(
-            current,
+            self.rail_view(),
             self.player.queue.list.len(),
             self.spotify_enabled(),
             self.anim.value("rail-pill", 0.0),
@@ -1381,13 +1548,36 @@ impl App {
             View::Spotify => self.spotify_view(p),
             View::Settings => self.settings_view(p),
         };
+        let t = self.anim.value("page", 1.0).clamp(0.0, 1.0);
+        let rise = if self.ui.nav.is_some() {
+            0.0
+        } else {
+            20.0 * (1.0 - t)
+        };
+        let content = stack![
+            container(content)
+                .padding(iced::Padding {
+                    top: rise,
+                    ..iced::Padding::ZERO
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(styles::fill(
+                    crate::theme::alpha(p.surface, (1.0 - t) * 0.9),
+                    0.0
+                )),
+        ];
         let main = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .clip(true)
             .style(styles::glass(p));
 
         let mut body = row![nav, Space::new().width(16), main].height(Length::Fill);
-        if s.lyrics_open {
+        if let Some(t) = self.overlay("pres-lyrics", s.lyrics_open) {
             body = body
                 .push(resizer(
                     Axis::Vertical,
@@ -1398,7 +1588,7 @@ impl App {
                 ))
                 .push(
                     container(self.lyrics_panel(p))
-                        .width(side_w)
+                        .width(side_w * t)
                         .height(Length::Fill)
                         .clip(true)
                         .style(styles::glass(p)),
@@ -1438,13 +1628,27 @@ impl App {
     }
 }
 
+static CURSOR: AtomicU64 = AtomicU64::new(0);
+
+fn pack(p: Point) -> u64 {
+    (u64::from(p.x.to_bits()) << 32) | u64::from(p.y.to_bits())
+}
+
+/// Last pointer position, tracked without waking the update loop.
+pub(crate) fn cursor_now() -> Point {
+    let v = CURSOR.load(Ordering::Relaxed);
+    Point::new(f32::from_bits((v >> 32) as u32), f32::from_bits(v as u32))
+}
+
 fn key_events(event: iced::Event, status: event::Status, _: window::Id) -> Option<Message> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => Some(
             Message::Key(key, modifiers, status == event::Status::Captured),
         ),
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            Some(Message::Cursor(position))
+            // Mouse moves must not reach `update`: each message rebuilds the whole view.
+            CURSOR.store(pack(position), Ordering::Relaxed);
+            None
         }
         iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHovered(true)),
         iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHovered(false)),
@@ -1479,8 +1683,14 @@ fn external_events() -> impl iced::futures::Stream<Item = External> {
     })
 }
 
+/// Off by default (we draw our own title bar) except on macOS, where winit cannot drag-resize
+/// an undecorated window and the traffic lights are expected; there the transparent,
+/// full-size title bar keeps the look. `MOSAIC_DECORATIONS=1`/`=0` overrides.
 fn decorations_enabled() -> bool {
-    std::env::var_os("MOSAIC_DECORATIONS").is_some_and(|v| v == "1")
+    match std::env::var_os("MOSAIC_DECORATIONS") {
+        Some(v) => v == "1",
+        None => cfg!(target_os = "macos"),
+    }
 }
 
 pub fn window_settings() -> window::Settings {

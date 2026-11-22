@@ -12,6 +12,12 @@ pub enum External {
     Tray(mosaic_platform::tray::TrayAction),
     /// A line from another launch (`focus` or `open <path>`).
     Instance(String),
+    /// Spotify (Soloist) moved on from one track URI to another by itself.
+    #[cfg_attr(not(feature = "spotify"), allow(dead_code))]
+    SpotifyMoved {
+        from: String,
+        to: String,
+    },
 }
 
 static SENDER: OnceLock<UnboundedSender<External>> = OnceLock::new();

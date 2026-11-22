@@ -379,7 +379,7 @@ impl App {
                     bottom: 0.0,
                     left: 12.0,
                 })
-                .height(32)
+                .center_y(32)
                 .max_width(260)
                 .style(move |_| container::Style {
                     border: iced::Border {

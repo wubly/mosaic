@@ -2,7 +2,7 @@
 
 use iced::mouse::{self, Cursor};
 use iced::widget::canvas::{self, stroke, Action, Canvas, Frame, Geometry, Path, Stroke};
-use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme};
 
 use crate::theme::Palette;
 
@@ -118,14 +118,11 @@ impl<Message> canvas::Program<Message> for WavySlider<'_, Message> {
             frame.stroke(&rest, line(self.palette.outline_variant));
         }
         if active_end > 0.0 {
-            let clip = Rectangle::new(Point::ORIGIN, Size::new(active_end, HEIGHT));
-            frame.with_clip(clip, |f| {
-                f.translate(Vector::new(0.0, MID));
-                f.stroke(
-                    &wave(w, self.amplitude, self.phase),
-                    line(self.palette.primary),
-                );
-            });
+            // Built only up to `active_end`: canvas clipping is unreliable on some backends.
+            frame.stroke(
+                &wave(active_end, self.amplitude, self.phase),
+                line(self.palette.primary),
+            );
         }
         let thumb_w = if state.held { 3.0 } else { 4.0 };
         let thumb = Path::rounded_rectangle(
@@ -151,21 +148,17 @@ impl<Message> canvas::Program<Message> for WavySlider<'_, Message> {
     }
 }
 
-/// `M0 0 Q7 -2A 14 0 T28 0 …`, scrolled left by `phase` and flattened by `amplitude`.
-fn wave(width: f32, amplitude: f32, phase: f32) -> Path {
-    let half = WAVELENGTH / 2.0;
-    let count = (width / half).ceil() as i32 + 3;
-    let offset = -(phase.rem_euclid(WAVELENGTH));
-    let k = amplitude.clamp(0.0, 1.0);
+/// The wave from x = 0 to `end`, centred on `MID`, scrolled left by `phase` and
+/// flattened by `amplitude`. Sampled as a polyline so it stops exactly at `end`.
+fn wave(end: f32, amplitude: f32, phase: f32) -> Path {
+    let k = amplitude.clamp(0.0, 1.0) * AMPLITUDE;
+    let y = |x: f32| MID - k * (std::f32::consts::TAU * (x + phase) / WAVELENGTH).sin();
+    let steps = (end / 2.0).ceil().max(1.0) as i32;
     Path::new(|p| {
-        p.move_to(Point::new(offset, 0.0));
-        for i in 0..count {
-            let sign = if i % 2 == 0 { -1.0 } else { 1.0 };
-            let x0 = offset + half * i as f32;
-            p.quadratic_curve_to(
-                Point::new(x0 + half / 2.0, sign * 2.0 * AMPLITUDE * k),
-                Point::new(x0 + half, 0.0),
-            );
+        p.move_to(Point::new(0.0, y(0.0)));
+        for i in 1..=steps {
+            let x = end * i as f32 / steps as f32;
+            p.line_to(Point::new(x, y(x)));
         }
     })
 }

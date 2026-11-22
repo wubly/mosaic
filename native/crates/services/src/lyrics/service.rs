@@ -9,9 +9,7 @@ use mosaic_core::storage::{read_json, write_json_atomic, LYRICS_CHOICES_FILE};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::parse::{
-    empty_lyrics, has_word_stamps, kind_of, norm, parse_lrc, parse_title, shape_lyrics,
-};
+use super::parse::{empty_lyrics, has_word_stamps, kind_of, parse_lrc, parse_title, shape_lyrics};
 use super::{Lyrics, LyricsKind, LyricsMeta, Record};
 use crate::Services;
 
@@ -140,30 +138,88 @@ fn records(value: Option<Value>) -> Vec<Record> {
     }
 }
 
+/// A title or artist reduced for matching: lowercase, accents and punctuation gone, bracketed
+/// parts and "feat." credits dropped. Unlike `norm` it keeps every script, so Cyrillic or
+/// Japanese titles still compare.
+fn match_key(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let lower = s.to_lowercase();
+    let mut bare = String::with_capacity(lower.len());
+    let mut depth = 0usize;
+    for c in lower.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            c if depth == 0 => bare.push(c),
+            _ => {}
+        }
+    }
+    for credit in [
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        " with ",
+    ] {
+        if let Some(i) = bare.find(credit) {
+            bare.truncate(i);
+        }
+    }
+    let mut out = String::new();
+    let mut gap = false;
+    for c in bare.nfkd().filter(|c| !('\u{300}'..='\u{36f}').contains(c)) {
+        if c.is_alphanumeric() {
+            if gap && !out.is_empty() {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(c);
+        } else {
+            gap = true;
+        }
+    }
+    out
+}
+
+/// Whether two match keys name the same song: equal, or one is the other plus trailing words
+/// ("song" and "song remastered"), never a word somewhere inside a longer title.
+fn same_title(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short == long || (short.chars().count() >= 3 && long.starts_with(&format!("{short} ")))
+}
+
+fn same_artist(want: &[String], theirs: &str) -> bool {
+    !theirs.is_empty()
+        && want
+            .iter()
+            .any(|w| !w.is_empty() && (theirs.contains(w.as_str()) || w.contains(theirs)))
+}
+
+/// The best synced record that is this song by this artist. Duration alone never qualifies
+/// a record: a different song of the same length is still a different song.
 fn pick(records: Vec<Record>, plan: &Plan) -> Option<Record> {
-    let want_track: Vec<String> = plan.tracks.iter().map(|t| norm(t)).collect();
-    let want_artist: Vec<String> = plan.artists.iter().map(|a| norm(a)).collect();
+    let want_track: Vec<String> = plan.tracks.iter().map(|t| match_key(t)).collect();
+    let want_artist: Vec<String> = plan.artists.iter().map(|a| match_key(a)).collect();
 
     let mut acceptable: Vec<Record> = records
         .into_iter()
-        .filter(Record::has_lyrics)
+        .filter(Record::has_synced)
         .filter(|r| {
-            let same_song = want_track.contains(&norm(r.track_name.as_deref().unwrap_or("")));
-            let theirs = norm(r.artist_name.as_deref().unwrap_or(""));
-            let same_artist = want_artist.iter().any(|w| {
-                !w.is_empty() && (theirs.contains(w.as_str()) || w.contains(theirs.as_str()))
-            });
+            let theirs = match_key(r.track_name.as_deref().unwrap_or(""));
+            let title = want_track.iter().any(|w| same_title(w, &theirs));
+            let artist = same_artist(
+                &want_artist,
+                &match_key(r.artist_name.as_deref().unwrap_or("")),
+            );
             let d = diff(r, plan.dur);
-            d <= 8.0 || (same_song && same_artist && d <= 45.0)
+            title && artist && (plan.dur <= 0 || d <= 20.0)
         })
         .collect();
-    acceptable.sort_by(|a, b| {
-        let synced =
-            |r: &Record| u8::from(r.synced_lyrics.as_deref().is_some_and(|s| !s.is_empty()));
-        synced(b)
-            .cmp(&synced(a))
-            .then(diff(a, plan.dur).total_cmp(&diff(b, plan.dur)))
-    });
+    acceptable.sort_by(|a, b| diff(a, plan.dur).total_cmp(&diff(b, plan.dur)));
     acceptable.into_iter().next()
 }
 
@@ -251,7 +307,11 @@ impl Services {
             return hit;
         }
 
-        if let Some((synced, plain, kind)) = self.embedded(&args.id).await {
+        if let Some((synced, plain, kind)) = self
+            .embedded(&args.id)
+            .await
+            .filter(|(synced, _, _)| !synced.is_empty())
+        {
             let result = Lyrics {
                 synced,
                 plain,
@@ -273,26 +333,6 @@ impl Services {
         if found.is_none() && self.lrclib_failures() > before {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             found = self.auto_lyrics(args).await;
-        }
-
-        let config = self.config();
-        if found.is_none() && config.beta == Some(true) && config.genius == Some(true) {
-            if let Some(plain) = self.genius_lyrics(&args.title, &args.artist).await {
-                let result = Lyrics {
-                    synced: Vec::new(),
-                    plain,
-                    meta: LyricsMeta {
-                        origin: "genius".into(),
-                        id: Some("genius".into()),
-                        title: args.title.clone(),
-                        artist: args.artist.clone(),
-                        album: String::new(),
-                        kind: LyricsKind::Plain,
-                    },
-                };
-                self.cache_put(&key, &result);
-                return result;
-            }
         }
 
         match found {
@@ -334,7 +374,7 @@ impl Services {
 
         let mut unique: Vec<Record> = Vec::new();
         for r in results {
-            let usable = r.has_lyrics() || r.instrumental == Some(true);
+            let usable = r.has_synced();
             if let Some(id) = r.id.filter(|_| usable) {
                 if !unique.iter().any(|u| u.id == Some(id)) {
                     unique.push(r);
@@ -551,27 +591,45 @@ mod tests {
     }
 
     #[test]
-    fn pick_applies_duration_and_name_rules() {
+    fn pick_needs_the_same_song_and_artist_with_synced_lyrics() {
         let p = plan("Artist - Song", "Uploader", 200_000);
-        let close = rec(1, "Other", "Nobody", 204.0, None, Some("plain"));
-        let far_same = rec(2, "Song", "Artist", 230.0, Some("[00:01.00] a"), None);
-        let far_other = rec(3, "Different", "Artist", 230.0, Some("[00:01.00] a"), None);
-        let none = rec(4, "Song", "Artist", 200.0, None, None);
+        let synced = Some("[00:01.00] a");
+        // Right length, wrong song: never good enough on its own.
+        let close_other = rec(1, "Other", "Nobody", 201.0, synced, None);
+        let other_title = rec(2, "Different", "Artist", 200.0, synced, None);
+        let other_artist = rec(3, "Song", "Somebody Else", 200.0, synced, None);
+        let plain_only = rec(4, "Song", "Artist", 200.0, None, Some("plain"));
+        let too_long = rec(5, "Song", "Artist", 230.0, synced, None);
+        let near = rec(6, "Song", "Artist", 210.0, synced, None);
+        let exact = rec(7, "Song", "Artist", 200.0, synced, None);
+        let featuring = rec(
+            8,
+            "Song (feat. Someone)",
+            "Artist, Someone",
+            201.0,
+            synced,
+            None,
+        );
 
-        assert_eq!(
-            pick(vec![far_other.clone(), none.clone()], &p).map(|r| r.id),
-            None
-        );
-        assert_eq!(
-            pick(vec![close.clone(), far_same.clone()], &p).and_then(|r| r.id),
-            Some(2)
-        );
-        assert_eq!(pick(vec![close], &p).and_then(|r| r.id), Some(1));
-        let exact_synced = rec(5, "Song", "Artist", 200.0, Some("[00:01.00] a"), None);
-        assert_eq!(
-            pick(vec![far_same, exact_synced], &p).and_then(|r| r.id),
-            Some(5)
-        );
+        for wrong in [close_other, other_title, other_artist, plain_only, too_long] {
+            let id = wrong.id;
+            assert_eq!(pick(vec![wrong], &p).and_then(|r| r.id), None, "{id:?}");
+        }
+        assert_eq!(pick(vec![near.clone()], &p).and_then(|r| r.id), Some(6));
+        assert_eq!(pick(vec![near, exact], &p).and_then(|r| r.id), Some(7));
+        assert_eq!(pick(vec![featuring], &p).and_then(|r| r.id), Some(8));
+    }
+
+    #[test]
+    fn titles_match_whole_not_by_a_short_word_inside() {
+        assert!(same_title("song", "song"));
+        assert!(same_title("song", "song remastered"));
+        assert!(!same_title("love", "i will always love you"));
+        assert!(!same_title("", "x"));
+        assert_eq!(match_key("Song (feat. Someone) [Remix]"), "song");
+        // Marks are stripped on both sides alike (й → и), so this still matches itself.
+        assert_eq!(match_key("Главный герой - Я"), "главныи герои я");
+        assert_eq!(match_key("Nie mów do mnie"), "nie mow do mnie");
     }
 
     #[tokio::test]

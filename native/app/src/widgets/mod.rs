@@ -5,6 +5,7 @@ pub mod icon;
 pub mod logo;
 pub mod rail;
 pub mod resizer;
+pub mod smooth;
 pub mod spinner;
 pub mod switch;
 pub mod toast;

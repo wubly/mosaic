@@ -44,9 +44,12 @@ pub enum Msg {
     CloseToTray(bool),
     Presence(bool),
     Beta(bool),
-    Genius(bool),
     PlaybackLogin,
-    PlaybackReady(Result<(), String>),
+    PlaybackReady(Result<String, String>),
+    SoloistPath(String),
+    SoloistKey(String),
+    SoloistSave,
+    SoloistDownload,
     Rescan,
     ClearHistory,
     Onboarding,
@@ -106,16 +109,26 @@ impl App {
                 self.services.update_config(|c| c.beta = Some(v));
                 self.spotify_boot_or_clear()
             }
-            Msg::Genius(v) => {
-                self.services.update_config(|c| c.genius = Some(v));
-                Task::none()
-            }
             Msg::PlaybackLogin => self.playback_login(),
             Msg::PlaybackReady(result) => {
                 self.toast(match result {
-                    Ok(()) => "Spotify playback is ready".to_string(),
+                    Ok(status) => status,
                     Err(e) => e,
                 });
+                Task::none()
+            }
+            Msg::SoloistPath(s) => {
+                self.ui.spotify.soloist_path = s;
+                Task::none()
+            }
+            Msg::SoloistKey(s) => {
+                self.ui.spotify.soloist_key = s;
+                Task::none()
+            }
+            Msg::SoloistSave => self.soloist_save(),
+            Msg::SoloistDownload => {
+                #[cfg(feature = "spotify")]
+                mosaic_platform::open::open_https(mosaic_services::spotify::soloist::DOWNLOAD_URL);
                 Task::none()
             }
             Msg::Rescan => {
@@ -147,7 +160,7 @@ impl App {
                 services
                     .spotify_playback()
                     .await
-                    .map(|_| ())
+                    .map(|pb| pb.describe())
                     .map_err(|e| e.to_string())
             },
             |r| Message::Settings(Msg::PlaybackReady(r)),
@@ -156,6 +169,44 @@ impl App {
 
     #[cfg(not(feature = "spotify"))]
     fn playback_login(&mut self) -> Task<Message> {
+        Task::none()
+    }
+
+    /// Saves the Soloist settings, restarts the backend with them, and starts Soloist when a key
+    /// is set (so it is up for pairing).
+    #[cfg(feature = "spotify")]
+    fn soloist_save(&mut self) -> Task<Message> {
+        use mosaic_services::spotify::soloist::SoloistSettings;
+        let settings = SoloistSettings {
+            path: self.ui.spotify.soloist_path.clone(),
+            api_key: self.ui.spotify.soloist_key.clone(),
+        };
+        if let Err(e) = self.services.soloist_save(&settings) {
+            self.toast(format!("Could not save Soloist settings: {e}"));
+            return Task::none();
+        }
+        if settings.configured() {
+            self.toast("Starting Spotify Soloist…");
+        }
+        let services = self.services.clone();
+        Task::perform(
+            async move {
+                services.spotify_playback_reset().await;
+                if !settings.configured() {
+                    return Ok("Soloist turned off; Spotify plays through librespot".to_string());
+                }
+                services
+                    .spotify_playback()
+                    .await
+                    .map(|pb| pb.describe())
+                    .map_err(|e| e.to_string())
+            },
+            |r| Message::Settings(Msg::PlaybackReady(r)),
+        )
+    }
+
+    #[cfg(not(feature = "spotify"))]
+    fn soloist_save(&mut self) -> Task<Message> {
         Task::none()
     }
 
@@ -346,7 +397,7 @@ impl App {
                 self.switch_row("Fade on pause and resume", "Ease the volume instead of cutting it off.".into(), s.fade_pause, Msg::FadePause, p),
                 self.switch_row("Skip silence at start and end", "Jump past long silent intros and outros, like the blank first minute some SoundCloud uploads use to dodge copyright. Never touches the middle of a song.".into(), s.skip_silence, Msg::SkipSilence, p),
                 self.switch_row("Level loudness", "Gently compress loud peaks so quiet and loud tracks sit closer together.".into(), s.leveling, Msg::Leveling, p),
-                self.switch_row("Show lyrics panel", "Synced, word-by-word lyrics from LRCLIB beside your music.".into(), s.lyrics_open, Msg::Lyrics, p),
+                self.switch_row("Show lyrics panel", "Synced lyrics from LRCLIB beside your music, matched to the song and artist.".into(), s.lyrics_open, Msg::Lyrics, p),
                 self.switch_row("Keep playing in the tray", tray_hint, config.close_to_tray() && self.tray_available, Msg::CloseToTray, p),
             ],
             p,
@@ -387,13 +438,6 @@ impl App {
                 p,
             )];
             if config.beta == Some(true) {
-                rows.push(self.switch_row(
-                    "Genius lyrics",
-                    "When LRCLIB has nothing, scrape plain lyrics from genius.com. No timing, and it can break whenever Genius changes its pages.".into(),
-                    config.genius == Some(true),
-                    Msg::Genius,
-                    p,
-                ));
                 rows.push(self.spotify_settings(p));
             }
             self.settings_card(rows, p)
@@ -470,22 +514,40 @@ impl App {
             p,
         );
 
-        let body = column![
-            self.page_header("Settings".into(), None, Vec::new(), p),
+        let groups = [
             self.group("Updates", self.settings_card(vec![update_row], p), p),
             self.group("Playback", playback, p),
             self.group("Discord", discord, p),
-            self.group("Beta", beta, p),
             self.group("Library", library, p),
+            self.group("Beta", beta, p),
             self.group(
                 "Keyboard shortcuts",
                 self.settings_card(vec![keys.into()], p),
-                p
+                p,
             ),
             self.group("About", about, p),
-        ]
-        .spacing(28)
-        .max_width(720);
+        ];
+        let header = self.page_header("Settings".into(), None, Vec::new(), p);
+        // Two columns once the page is wide enough for two readable cards side by side.
+        let body: Element<'_, Message> = if self.main_width() >= 1120.0 {
+            let mut left = column![].spacing(28).width(Length::FillPortion(1));
+            let mut right = column![].spacing(28).width(Length::FillPortion(1));
+            for (i, g) in groups.into_iter().enumerate() {
+                if i < 4 {
+                    left = left.push(g);
+                } else {
+                    right = right.push(g);
+                }
+            }
+            column![header, row![left, right].spacing(24)]
+                .spacing(28)
+                .into()
+        } else {
+            column(std::iter::once(header).chain(groups))
+                .spacing(28)
+                .max_width(720)
+                .into()
+        };
         page(body, p)
     }
 
@@ -507,12 +569,31 @@ impl App {
             "Search and browse Spotify, import playlists, and (with Premium) play tracks inside Mosaic. Needs your own client ID.".into()
         };
         let action: Element<'_, Message> = if status.connected {
-            tonal_button(
-                "Disconnect",
-                Icon::Close,
-                p,
-                Message::Spotify(Sp::Disconnect),
-            )
+            row![
+                button(
+                    container(
+                        text(if st.importing {
+                            "Importing…"
+                        } else {
+                            "Import everything"
+                        })
+                        .size(14)
+                    )
+                    .center_y(Length::Fill)
+                )
+                .height(40)
+                .padding([0, 20])
+                .style(styles::primary(p))
+                .on_press_maybe((!st.importing).then_some(Message::Spotify(Sp::ImportAll))),
+                tonal_button(
+                    "Disconnect",
+                    Icon::Close,
+                    p,
+                    Message::Spotify(Sp::Disconnect)
+                ),
+            ]
+            .spacing(8)
+            .into()
         } else {
             let label = if st.connecting {
                 "Waiting for Spotify…"
@@ -577,22 +658,84 @@ impl App {
                 .spacing(8)
                 .padding(iced::Padding { bottom: 14.0, ..iced::Padding::ZERO }),
             );
-        } else if cfg!(feature = "spotify") && status.premium {
-            col = col.push(
-                container(tonal_button(
-                    "Enable playback (Premium)",
-                    Icon::PlayArrow,
-                    p,
-                    Message::Settings(Msg::PlaybackLogin),
-                ))
-                .padding([0, 0])
-                .padding(iced::Padding {
-                    bottom: 14.0,
-                    ..iced::Padding::ZERO
-                }),
-            );
+        } else if cfg!(feature = "spotify") {
+            let soloist = !st.soloist_key.trim().is_empty();
+            if status.premium || soloist {
+                col = col.push(
+                    container(tonal_button(
+                        if soloist {
+                            "Start Spotify Soloist"
+                        } else {
+                            "Enable playback (Premium)"
+                        },
+                        Icon::PlayArrow,
+                        p,
+                        Message::Settings(Msg::PlaybackLogin),
+                    ))
+                    .padding(iced::Padding {
+                        bottom: 14.0,
+                        ..iced::Padding::ZERO
+                    }),
+                );
+            }
+            col = col.push(self.soloist_settings(p));
         }
         col.into()
+    }
+
+    fn soloist_settings(&self, p: Palette) -> Element<'_, Message> {
+        let st = &self.ui.spotify;
+        let field = move |placeholder: &str, value: &str, secure: bool, on: fn(String) -> Msg| {
+            container(
+                text_input(placeholder, value)
+                    .on_input(move |s| Message::Settings(on(s)))
+                    .secure(secure)
+                    .size(14)
+                    .padding([0, 16])
+                    .style(move |_, _| iced::widget::text_input::Style {
+                        background: p.surface_container_highest.into(),
+                        border: iced::border::rounded(12),
+                        icon: p.on_surface_variant,
+                        placeholder: p.on_surface_variant,
+                        value: p.on_surface,
+                        selection: crate::theme::alpha(p.primary, 0.35),
+                    }),
+            )
+            .height(44)
+            .center_y(44)
+        };
+        column![
+            column![
+                text("Spotify Soloist").size(16),
+                text("Spotify no longer gives newer accounts playback keys through librespot. Soloist is Spotify's official headless player and works for those accounts. Download it from Spotify (Mosaic can't bundle it, and builds expire after 90 days), make an API key at developer.spotify.com/dashboard/soloist, then save. To pair, pick \u{201c}Mosaic\u{201d} from the devices menu in the Spotify app once. Soloist plays straight to your speakers, so EQ, leveling, crossfade and the visualizer don't apply to Spotify tracks.")
+                    .size(13)
+                    .color(p.on_surface_variant),
+            ]
+            .spacing(2),
+            field("Soloist API key", &st.soloist_key, true, Msg::SoloistKey),
+            field(
+                "Path to soloist (blank: search PATH and ~/.local/bin)",
+                &st.soloist_path,
+                false,
+                Msg::SoloistPath,
+            ),
+            row![
+                primary_button("Save", Icon::Check, p, Message::Settings(Msg::SoloistSave)),
+                tonal_button(
+                    "Get Soloist",
+                    Icon::OpenInNew,
+                    p,
+                    Message::Settings(Msg::SoloistDownload)
+                ),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .padding(iced::Padding {
+            bottom: 14.0,
+            ..iced::Padding::ZERO
+        })
+        .into()
     }
 }
 

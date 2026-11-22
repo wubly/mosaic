@@ -17,7 +17,14 @@ use mosaic_core::storage::{read_json, write_json_atomic};
 
 pub const PORT: u16 = 8898;
 pub const REDIRECT: &str = "http://127.0.0.1:8898/callback";
-const SCOPES: &str = "user-read-email user-read-private user-library-read user-follow-read playlist-read-private playlist-read-collaborative";
+const SCOPES: &str = "user-read-email user-read-private user-library-read user-library-modify user-follow-read user-follow-modify playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-top-read user-read-recently-played";
+/// Scopes added after the first release; a token without them is read-only until reconnected.
+const EDIT_SCOPES: [&str; 4] = [
+    "user-library-modify",
+    "user-follow-modify",
+    "playlist-modify-public",
+    "playlist-modify-private",
+];
 const AUTH_FILE: &str = "spotify-auth.json";
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -26,10 +33,14 @@ pub struct Tokens {
     pub refresh: Option<String>,
     /// Epoch milliseconds.
     pub expires: i64,
+    /// Space-separated scopes the user granted.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Profile {
+    pub id: String,
     pub name: String,
     pub country: String,
     pub premium: bool,
@@ -41,6 +52,8 @@ pub struct Status {
     pub connected: bool,
     pub user: Option<String>,
     pub premium: bool,
+    /// The token may change the library and playlists (granted the edit scopes).
+    pub can_edit: bool,
 }
 
 #[derive(Default)]
@@ -139,6 +152,7 @@ impl Services {
             .lock()
             .map_err(|_| anyhow!("poisoned"))?
             .clone();
+        let previous_scope = previous.as_ref().and_then(|t| t.scope.clone());
         let tokens = Tokens {
             access: json["access_token"]
                 .as_str()
@@ -149,6 +163,10 @@ impl Services {
                 .map(str::to_string)
                 .or_else(|| previous.and_then(|t| t.refresh)),
             expires: now_ms() + (json["expires_in"].as_i64().unwrap_or(3600) - 60) * 1000,
+            scope: json["scope"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| previous_scope.clone()),
         };
         let _ = write_json_atomic(&self.inner.dirs.file(AUTH_FILE), &tokens);
         *self
@@ -186,26 +204,41 @@ impl Services {
 
     /// GET against the Web API; `Value::Null` for 204.
     pub async fn spotify_api(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        self.spotify_send(reqwest::Method::GET, path, query, None)
+            .await
+    }
+
+    /// Any Web API call; `Value::Null` for an empty body.
+    pub async fn spotify_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<Value> {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
             format!("https://api.spotify.com/v1{path}")
         };
-        let res = self
+        let mut req = self
             .http()
-            .get(url)
+            .request(method, url)
             .bearer_auth(self.spotify_token().await?)
             .query(query)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await?;
-        if res.status().as_u16() == 204 {
-            return Ok(Value::Null);
-        }
-        let ok = res.status().is_success();
+            .timeout(Duration::from_secs(15));
+        req = match body {
+            Some(b) => req.json(&b),
+            None => req.header("content-length", "0"),
+        };
+        let res = req.send().await?;
         let status = res.status();
-        let json: Value = res.json().await.unwrap_or(Value::Null);
-        if !ok {
+        let bytes = res.bytes().await.unwrap_or_default();
+        let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if !status.is_success() {
+            if status.as_u16() == 403 && !self.spotify_can_edit() {
+                bail!("Reconnect Spotify in Settings to allow changes from Mosaic");
+            }
             bail!(json["error"]["message"].as_str().map_or_else(
                 || format!("Spotify said {}", status.as_u16()),
                 str::to_string
@@ -214,9 +247,35 @@ impl Services {
         Ok(json)
     }
 
+    /// Whether the stored token carries the library and playlist edit scopes.
+    pub fn spotify_can_edit(&self) -> bool {
+        self.inner
+            .spotify
+            .tokens
+            .lock()
+            .ok()
+            .and_then(|t| t.as_ref().and_then(|t| t.scope.clone()))
+            .is_some_and(|s| {
+                let granted: Vec<&str> = s.split_whitespace().collect();
+                EDIT_SCOPES.iter().all(|e| granted.contains(e))
+            })
+    }
+
+    /// The signed-in user's Spotify id.
+    pub fn spotify_user_id(&self) -> String {
+        self.inner
+            .spotify
+            .profile
+            .lock()
+            .ok()
+            .and_then(|p| p.as_ref().map(|p| p.id.clone()))
+            .unwrap_or_default()
+    }
+
     async fn spotify_load_profile(&self) -> Option<Profile> {
         let me = self.spotify_api("/me", &[]).await.ok()?;
         let profile = Profile {
+            id: me["id"].as_str().unwrap_or_default().to_string(),
             name: me["display_name"]
                 .as_str()
                 .or_else(|| me["id"].as_str())
@@ -256,6 +315,7 @@ impl Services {
             connected: has_tokens && profile.is_some(),
             user: profile.as_ref().map(|p| p.name.clone()),
             premium: profile.is_some_and(|p| p.premium),
+            can_edit: self.spotify_can_edit(),
         }
     }
 

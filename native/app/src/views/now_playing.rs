@@ -82,6 +82,12 @@ impl App {
             text(track.artist.clone())
                 .size(16)
                 .color(p.on_surface_variant),
+            container(crate::views::track::provider_tag(
+                track,
+                13.0,
+                p.on_surface_variant
+            ))
+            .padding([4, 0]),
             container(visualizer::<Message>(self.viz, p.primary, 64.0))
                 .width(art_size)
                 .padding(iced::Padding {
@@ -150,20 +156,6 @@ impl App {
     }
 
     pub(crate) fn mini_view(&self, p: Palette) -> Element<'_, Message> {
-        let expand = container(
-            button(container(icon(Icon::OpenInFull, 20.0)).center(Length::Fill))
-                .width(40)
-                .height(40)
-                .padding(0)
-                .style(styles::icon_button(p, false))
-                .on_press(Message::ToggleMini),
-        )
-        .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Right)
-        .padding(iced::Padding {
-            right: 142.0,
-            ..iced::Padding::ZERO
-        });
         let content: Element<'_, Message> = match &self.player.track {
             Some(t) => column![
                 container(self.art(&t.artwork, 210.0, 24.0)).center_x(Length::Fill),
@@ -172,7 +164,9 @@ impl App {
                         .size(18)
                         .wrapping(text::Wrapping::None),
                     text(t.artist.clone()).size(14).color(p.on_surface_variant),
+                    crate::views::track::provider_tag(t, 12.0, p.on_surface_variant),
                 ]
+                .spacing(2)
                 .align_x(Alignment::Center)
                 .width(Length::Fill),
                 self.lyrics_body(Variant::Bare, p),
@@ -201,12 +195,6 @@ impl App {
                 bottom: 16.0,
                 left: 20.0
             }),
-            container(expand)
-                .padding(iced::Padding {
-                    top: 0.0,
-                    ..iced::Padding::ZERO
-                })
-                .height(40),
         ]
         .into()
     }

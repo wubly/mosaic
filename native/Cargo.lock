@@ -3850,6 +3850,8 @@ name = "mosaic"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "ash",
+ "bytes",
  "chrono",
  "crossbeam-channel",
  "iced",
@@ -3861,6 +3863,7 @@ dependencies = [
  "mosaic-services",
  "rand 0.10.4",
  "rfd",
+ "rustls 0.23.46",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3924,6 +3927,7 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "chrono",
  "discord-rich-presence",
  "futures",
  "image",
@@ -3945,6 +3949,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "unicode-normalization",
  "url",

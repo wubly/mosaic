@@ -4,7 +4,6 @@ use iced::widget::{button, column, container, hover, mouse_area, row, stack, tex
 use iced::{Alignment, Element, Length, Point};
 use mosaic_core::format::fmt_ms;
 use mosaic_core::model::{Source, Track};
-use mosaic_core::relevance::filter_along;
 
 use super::artwork_of;
 use crate::app::{App, Message};
@@ -27,8 +26,10 @@ pub enum ListRef {
     Local,
     Playlist(String),
     SpotifyPage,
-    SpotifySearch,
     SpotifySaved,
+    SpotifyShelf(super::spotify::Shelf),
+    /// Soloist's own up-next list.
+    SpotifyQueue,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +56,8 @@ pub enum MenuAction {
     Submenu,
     AddTo(String),
     NewPlaylist,
+    AddToSpotify(String),
+    NewSpotifyPlaylist,
     Radio,
     OpenExternal,
     CopyLink,
@@ -76,6 +79,50 @@ pub fn source_name(t: &Track) -> &'static str {
     }
 }
 
+/// Brand colour of where a track streams from.
+pub fn source_color(t: &Track) -> iced::Color {
+    match t.source {
+        Source::Spotify => iced::Color::from_rgb8(0x1E, 0xD7, 0x60),
+        Source::SoundCloud => iced::Color::from_rgb8(0xFF, 0x77, 0x00),
+        Source::YouTube => iced::Color::from_rgb8(0xFF, 0x33, 0x33),
+        _ => iced::Color::from_rgb8(0x9E, 0x9E, 0x9E),
+    }
+}
+
+/// Short provider label: "Spotify", "SoundCloud", "On device".
+pub fn provider_label(t: &Track) -> &'static str {
+    match t.source {
+        Source::Local => "On device",
+        _ => source_name(t),
+    }
+}
+
+/// A dot in the provider's colour and its name, for rows, the player bar and Now Playing.
+pub fn provider_tag<'a, M: 'a>(t: &Track, size: f32, color: iced::Color) -> Element<'a, M> {
+    let dot = source_color(t);
+    row![
+        container(Space::new().width(size * 0.6).height(size * 0.6)).style(move |_| {
+            container::Style {
+                background: Some(dot.into()),
+                border: iced::border::rounded(size),
+                ..container::Style::default()
+            }
+        }),
+        text(provider_label(t)).size(size).color(color),
+    ]
+    .spacing(size * 0.4)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The provider as a dark pill over artwork.
+fn provider_pill<'a, M: 'a>(t: &Track) -> Element<'a, M> {
+    container(provider_tag(t, 11.0, iced::Color::WHITE))
+        .padding([1, 8])
+        .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.67), 8.0))
+        .into()
+}
+
 fn is_playable_source(t: &Track) -> bool {
     !matches!(t.source, Source::YouTube | Source::Other(_))
 }
@@ -83,18 +130,20 @@ fn is_playable_source(t: &Track) -> bool {
 impl App {
     pub(crate) fn resolve_list(&self, list: &ListRef) -> Vec<Track> {
         match list {
-            ListRef::Results => filter_along(self.ui.discover.results.clone(), None),
-            ListRef::Charts => filter_along(self.ui.discover.charts.1.clone(), None),
+            // Each list resolves to exactly what was drawn, or indices point at the wrong track.
+            ListRef::Results => self.search_tracks(),
+            ListRef::Charts => self.ui.discover.charts.1.clone(),
             ListRef::More => self.ui.discover.more.1.clone(),
-            ListRef::Recent => self.recent_tracks(),
+            ListRef::Recent => self.recent.clone(),
+            ListRef::SpotifyQueue => self.ui.spotify.queue.1.clone(),
             ListRef::Device => self.device_hits(),
             ListRef::Queue => self.player.queue.list.clone(),
             ListRef::Likes => self.store.likes.clone(),
             ListRef::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
             ListRef::Local => self.ui.local.tracks.clone(),
             ListRef::SpotifyPage => self.spotify_page_tracks(),
-            ListRef::SpotifySearch => self.ui.spotify.search.tracks.clone(),
             ListRef::SpotifySaved => self.ui.spotify.saved.clone(),
+            ListRef::SpotifyShelf(shelf) => self.spotify_shelf(*shelf),
             ListRef::Playlist(id) => self
                 .store
                 .playlists
@@ -156,13 +205,17 @@ impl App {
         let art = stack![
             self.art(artwork_of(t), width, 16.0),
             container(
-                container(text(fmt_ms(t.duration)).size(11).color(iced::Color::WHITE))
-                    .padding([0, 8])
-                    .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.67), 8.0)),
+                row![
+                    provider_pill(t),
+                    Space::new().width(Length::Fill),
+                    container(text(fmt_ms(t.duration)).size(11).color(iced::Color::WHITE))
+                        .padding([1, 8])
+                        .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.67), 8.0)),
+                ]
+                .align_y(Alignment::Center),
             )
             .width(width)
             .height(width)
-            .align_x(iced::alignment::Horizontal::Right)
             .align_y(iced::alignment::Vertical::Bottom)
             .padding(8),
         ];
@@ -302,6 +355,15 @@ impl App {
         let mut sub_row = row![].spacing(4).align_y(Alignment::Center);
         if t.source == Source::Local {
             sub_row = sub_row.push(icon(Icon::Folder, 12.0).color(p.on_surface_variant));
+        } else {
+            let dot = source_color(t);
+            sub_row = sub_row.push(container(Space::new().width(7).height(7)).style(move |_| {
+                container::Style {
+                    background: Some(dot.into()),
+                    border: iced::border::rounded(4),
+                    ..container::Style::default()
+                }
+            }));
         }
         sub_row = sub_row.push(
             text(sub)
@@ -329,6 +391,7 @@ impl App {
                 .width(Length::Fill),
             ]
             .spacing(12)
+            .height(Length::Fill)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
@@ -571,10 +634,30 @@ impl App {
                 false,
             ));
             height += 40.0 + 9.0 + 40.0 * (self.store.playlists.len() as f32 + 1.0);
+            if t.source == Source::Spotify && t.uri.is_some() && self.spotify_can_edit() {
+                items = items.push(divider()).push(head("On Spotify".into(), None));
+                for pl in &self.ui.spotify.editable {
+                    items = items.push(item(
+                        icon(Icon::PlaylistPlay, 20.0),
+                        pl.name.clone(),
+                        MenuAction::AddToSpotify(pl.id.clone()),
+                        false,
+                    ));
+                }
+                items = items.push(item(
+                    icon(Icon::Add, 20.0),
+                    "New Spotify playlist".into(),
+                    MenuAction::NewSpotifyPlaylist,
+                    false,
+                ));
+                height += 9.0 + 40.0 + 40.0 * (self.ui.spotify.editable.len() as f32 + 1.0);
+            }
         }
         let width = 248.0;
         let x = menu.at.x.min(self.size.width - width - 8.0).max(8.0);
         let y = menu.at.y.min(self.size.height - height - 8.0).max(8.0);
+        // Drops 8 px into place as it opens.
+        let drop = 8.0 * (1.0 - self.anim.value("pres-menu", 1.0).clamp(0.0, 1.0));
         let popup = container(items)
             .width(width)
             .padding(6)
@@ -585,7 +668,7 @@ impl App {
                 .on_right_press(Message::Track(Msg::CloseMenu)),
             container(mouse_area(popup).on_press(Message::Nop)).padding(iced::Padding {
                 left: x,
-                top: y,
+                top: (y - drop).max(0.0),
                 ..iced::Padding::ZERO
             })
         ]
@@ -611,15 +694,14 @@ impl App {
                 let Some((track, _)) = self.resolve(&r) else {
                     return Task::none();
                 };
-                self.like(&track);
-                Task::none()
+                self.like(&track)
             }
             Msg::OpenMenu(r) => {
                 if let Some((track, _)) = self.resolve(&r) {
                     if is_playable_source(&track) {
                         self.ui.menu = Some(MenuState {
                             track,
-                            at: self.cursor,
+                            at: crate::app::cursor_now(),
                             sub: false,
                         });
                     }
@@ -634,7 +716,7 @@ impl App {
         }
     }
 
-    pub(crate) fn like(&mut self, track: &Track) {
+    pub(crate) fn like(&mut self, track: &Track) -> iced::Task<Message> {
         let liked = self.store.toggle_like(track);
         self.touch();
         self.toast(if liked {
@@ -642,6 +724,7 @@ impl App {
         } else {
             "Removed from Liked songs"
         });
+        self.spotify_sync_like(track, liked)
     }
 
     fn on_menu(&mut self, action: MenuAction) -> iced::Task<Message> {
@@ -660,10 +743,9 @@ impl App {
             MenuAction::Play => self.player_input(PlayerInput::Play(t, None)),
             MenuAction::PlayNext => self.player_input(PlayerInput::PlayNext(t)),
             MenuAction::Queue => self.player_input(PlayerInput::AddToQueue(t)),
-            MenuAction::Like => {
-                self.like(&t);
-                Task::none()
-            }
+            MenuAction::Like => self.like(&t),
+            MenuAction::AddToSpotify(id) => self.spotify_add_to(id, &t),
+            MenuAction::NewSpotifyPlaylist => self.spotify_new_playlist(&t),
             MenuAction::AddTo(id) => {
                 let name = self
                     .store

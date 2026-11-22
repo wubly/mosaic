@@ -148,7 +148,16 @@ impl App {
                         .wrapping(text::Wrapping::None)
                 )
                 .clip(true),
-                container(artist).clip(true),
+                container(
+                    row![
+                        crate::views::track::provider_tag(&track, 12.0, p.on_surface_variant),
+                        text("·").size(12).color(p.on_surface_variant),
+                        artist,
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                )
+                .clip(true),
             ])
             .width(Length::Fill),
             icon_btn(
@@ -215,7 +224,8 @@ impl App {
         container(
             row![
                 container(now).width(Length::FillPortion(10)),
-                container(self.controls(p, bar_h <= 96.0)).width(Length::FillPortion(13)),
+                // Full controls need 84 px (56 transport + 28 seek); below that, the compact set.
+                container(self.controls(p, bar_h - 16.0 < 84.0)).width(Length::FillPortion(13)),
                 container(tools)
                     .width(Length::FillPortion(10))
                     .align_x(iced::alignment::Horizontal::Right),
@@ -223,7 +233,7 @@ impl App {
             .spacing(24)
             .align_y(Alignment::Center),
         )
-        .padding([12, 24])
+        .padding([8, 24])
         .width(Length::Fill)
         .height(bar_h)
         .center_y(bar_h)
@@ -293,7 +303,7 @@ impl App {
             .spacing(24)
             .align_y(Alignment::Center),
         )
-        .padding([12, 24])
+        .padding([8, 24])
         .width(Length::Fill)
         .height(bar_h)
         .center_y(bar_h)
@@ -415,7 +425,7 @@ impl App {
         .spacing(12)
         .align_y(Alignment::Center);
         column![transport, seek]
-            .spacing(if compact { 0 } else { 2 })
+            .spacing(0)
             .align_x(Alignment::Center)
             .width(Length::Fill)
             .into()

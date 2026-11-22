@@ -43,11 +43,11 @@ impl View {
 }
 
 pub const WIDTH: f32 = 80.0;
-const ITEM_H: f32 = 60.0;
+const ITEM_H: f32 = 64.0;
 const GAP: f32 = 12.0;
 const PAD_TOP: f32 = 12.0;
 const PAD_BOTTOM: f32 = 4.0;
-const PILL_INSET: f32 = 4.0;
+const PILL_INSET: f32 = 6.0;
 
 pub fn top_items(spotify: bool) -> Vec<View> {
     let mut items = vec![
@@ -114,10 +114,11 @@ fn item<'a, Message: Clone + 'a>(
     };
     button(
         column![pill, text(view.label()).size(12).color(label_color)]
-            .spacing(4)
+            .spacing(6)
+            .width(Length::Fill)
             .align_x(Alignment::Center),
     )
-    .padding([4, 0])
+    .padding([6, 0])
     .width(72)
     .height(ITEM_H)
     .style(styles::bare(p))

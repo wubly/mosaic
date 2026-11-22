@@ -1,8 +1,11 @@
 pub mod auth;
 pub mod embed;
 pub mod import;
+pub mod library;
 pub mod matcher;
 #[cfg(feature = "spotify")]
 pub mod playback;
+#[cfg(feature = "spotify")]
+pub mod soloist;
 pub mod url;
 pub mod web_api;

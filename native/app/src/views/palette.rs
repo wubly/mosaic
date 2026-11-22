@@ -248,7 +248,7 @@ impl App {
         }
     }
 
-    pub(crate) fn palette_view(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn palette_view(&self, p: Palette, t: f32) -> Element<'_, Message> {
         let items = self.palette_items();
         let sel = self.ui.palette.selected;
         let input = text_input("Type a command or search…", &self.ui.palette.query)
@@ -345,7 +345,9 @@ impl App {
         let panel = container(column![
             head,
             divider,
-            scrollable(container(list).padding(8)).height(Length::Shrink)
+            crate::widgets::smooth::smooth(
+                scrollable(container(list).padding(8)).height(Length::Shrink)
+            )
         ])
         .width(620)
         .style(styles::popup(p, 28.0));
@@ -354,14 +356,14 @@ impl App {
                 container(Space::new())
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.6), 0.0))
+                    .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.6 * t), 0.0))
             )
             .on_press(Message::Palette(Msg::Close)),
             container(mouse_area(panel).on_press(Message::Nop))
                 .width(Length::Fill)
                 .center_x(Length::Fill)
                 .padding(iced::Padding {
-                    top: self.size.height * 0.14,
+                    top: self.size.height * 0.14 + 12.0 * (1.0 - t),
                     ..iced::Padding::ZERO
                 })
         ]

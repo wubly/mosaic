@@ -455,15 +455,17 @@ impl App {
         .padding([16, 24]);
         column![
             head,
-            scrollable(container(list).padding([0, 16]))
-                .style(styles::scrollbar(p))
-                .height(Length::Fill),
+            crate::widgets::smooth::smooth(
+                scrollable(container(list).padding([0, 16]))
+                    .style(styles::scrollbar(p))
+                    .height(Length::Fill)
+            ),
             foot
         ]
         .into()
     }
 
-    pub(crate) fn import_view(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn import_view(&self, p: Palette, t: f32) -> Element<'_, Message> {
         let body: Element<'_, Message> = match self.ui.import.step {
             Step::Input | Step::Fetching => self.dialog_input(p),
             Step::Matching => self.dialog_matching(p),
@@ -500,10 +502,15 @@ impl App {
                 container(Space::new())
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.6), 0.0))
+                    .style(styles::fill(iced::Color::from_rgba8(0, 0, 0, 0.6 * t), 0.0))
             )
             .on_press(Message::Import(Msg::Close)),
-            container(mouse_area(dialog).on_press(Message::Nop)).center(Length::Fill)
+            container(mouse_area(dialog).on_press(Message::Nop))
+                .padding(iced::Padding {
+                    top: 16.0 * (1.0 - t),
+                    ..iced::Padding::ZERO
+                })
+                .center(Length::Fill)
         ]
         .into()
     }

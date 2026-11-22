@@ -60,10 +60,17 @@ async fn spotify(services: &Services, track: &Track, seek_to: f64) -> Result<Str
         seeker.seek((secs.max(0.0) * 1000.0) as u32);
     });
     let (writer, finisher, failer) = (producer.clone(), producer.clone(), producer);
+    let from = uri.clone();
     let target = Target {
         write: Arc::new(move |samples| writer.write(samples)),
         finish: Arc::new(move || finisher.finish()),
         fail: Arc::new(move |message| failer.fail(message)),
+        moved: Arc::new(move |to| {
+            let _ = crate::external::sender().send(crate::external::External::SpotifyMoved {
+                from: from.clone(),
+                to,
+            });
+        }),
     };
     playback
         .load(&uri, (seek_to.max(0.0) * 1000.0) as u32, target)

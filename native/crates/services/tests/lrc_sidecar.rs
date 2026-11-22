@@ -29,10 +29,21 @@ async fn a_sibling_lrc_file_becomes_the_lyrics_of_a_scanned_local_track() {
     let music = dir.path().join("music");
     std::fs::create_dir_all(&music).unwrap();
     silent_wav(&music.join("Artist - Song.wav"));
-    std::fs::write(music.join("Artist - Song.lrc"), "[00:01.00]first line\n[00:03.50]second line\n").unwrap();
+    std::fs::write(
+        music.join("Artist - Song.lrc"),
+        "[00:01.00]first line\n[00:03.50]second line\n",
+    )
+    .unwrap();
 
-    let s = Services::new(Dirs::with_root(dir.path().join("data")), Arc::new(Mutex::default())).unwrap();
-    let tracks = s.scan_paths(&[music.to_string_lossy().into_owned()]).await.unwrap();
+    let s = Services::new(
+        Dirs::with_root(dir.path().join("data")),
+        Arc::new(Mutex::default()),
+    )
+    .unwrap();
+    let tracks = s
+        .scan_paths(&[music.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
     assert_eq!(tracks.len(), 1);
     let lrc = tracks[0].lrc_path.clone().expect("lrc_path is set");
     assert!(lrc.ends_with("Artist - Song.lrc"));
@@ -46,7 +57,11 @@ async fn a_sibling_lrc_file_becomes_the_lyrics_of_a_scanned_local_track() {
             lrc_path: Some(lrc),
         })
         .await;
-    let lines: Vec<_> = lyrics.synced.iter().map(|l| (l.t, l.text.as_str())).collect();
+    let lines: Vec<_> = lyrics
+        .synced
+        .iter()
+        .map(|l| (l.t, l.text.as_str()))
+        .collect();
     assert_eq!(lines, [(1.0, "first line"), (3.5, "second line")]);
     assert_eq!(lyrics.meta.origin, "file");
 }

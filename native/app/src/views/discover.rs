@@ -12,6 +12,7 @@ use crate::app::{App, Message};
 use crate::theme::{styles, Palette};
 use crate::widgets::icon::{icon, Icon};
 use crate::widgets::logo;
+use crate::widgets::smooth::{carousel, smooth};
 
 pub const GENRES: [(&str, &str); 7] = [
     ("all-music", "Trending"),
@@ -42,6 +43,8 @@ pub struct State {
     pub query: String,
     pub results: Vec<Track>,
     pub busy: bool,
+    /// The Spotify half of a search is still out.
+    pub sp_busy: bool,
     pub error: String,
     pub seq: u64,
     pub genre: &'static str,
@@ -59,6 +62,7 @@ impl Default for State {
             query: String::new(),
             results: Vec::new(),
             busy: false,
+            sp_busy: false,
             error: String::new(),
             seq: 0,
             genre: "all-music",
@@ -142,6 +146,7 @@ impl App {
                     self.ui.discover.results.clear();
                     self.ui.spotify.search = Default::default();
                     self.ui.discover.busy = false;
+                    self.ui.discover.sp_busy = false;
                     return Task::none();
                 }
                 Task::perform(tokio::time::sleep(DEBOUNCE), move |()| {
@@ -165,7 +170,9 @@ impl App {
             Msg::Clear => {
                 self.ui.discover.query.clear();
                 self.ui.discover.results.clear();
+                self.ui.spotify.search = Default::default();
                 self.ui.discover.busy = false;
+                self.ui.discover.sp_busy = false;
                 self.ui.discover.seq += 1;
                 iced::widget::operation::focus(SEARCH_ID)
             }
@@ -175,7 +182,7 @@ impl App {
                 }
                 self.ui.discover.busy = false;
                 match result {
-                    Ok(list) => self.ui.discover.results = list,
+                    Ok(list) => self.ui.discover.results = filter_along(list, None),
                     Err(e) => self.ui.discover.error = e,
                 }
                 Task::none()
@@ -187,7 +194,8 @@ impl App {
             }
             Msg::Charts(genre, result) => {
                 if genre == self.ui.discover.genre {
-                    self.ui.discover.charts = (genre, result.unwrap_or_default());
+                    self.ui.discover.charts =
+                        (genre, filter_along(result.unwrap_or_default(), None));
                     self.ui.discover.charts_loaded = true;
                 }
                 Task::none()
@@ -203,11 +211,25 @@ impl App {
         }
     }
 
+    /// Search hits from every provider, interleaved so neither buries the other. Both halves
+    /// arrive on their own, so this grows as they land.
+    pub(crate) fn search_tracks(&self) -> Vec<Track> {
+        let sc = &self.ui.discover.results;
+        let sp = &self.ui.spotify.search.tracks;
+        let mut out = Vec::with_capacity(sc.len() + sp.len());
+        for i in 0..sc.len().max(sp.len()) {
+            out.extend(sp.get(i).cloned());
+            out.extend(sc.get(i).cloned());
+        }
+        out
+    }
+
     fn run_search(&mut self) -> Task<Message> {
         let q = self.ui.discover.query.trim().to_string();
         let seq = self.ui.discover.seq;
         self.ui.discover.busy = true;
         self.ui.discover.error.clear();
+        self.ui.discover.sp_busy = self.spotify_enabled();
         let services = self.services.clone();
         let spotify = self.search_spotify(q.clone(), seq);
         let sc = Task::perform(
@@ -248,34 +270,35 @@ impl App {
     }
 
     fn shelf<'a>(&'a self, list: &'a [Track], which: ListRef, p: Palette) -> Element<'a, Message> {
-        scrollable(
-            row(list.iter().enumerate().map(|(i, t)| {
-                self.tile(
-                    t,
-                    TrackRef {
-                        list: which.clone(),
-                        index: i,
-                    },
-                    148.0,
-                    p,
-                )
-            }))
-            .spacing(20)
-            .padding(iced::Padding {
-                top: 0.0,
-                right: 4.0,
-                bottom: 14.0,
-                left: 4.0,
-            }),
+        carousel(
+            scrollable(
+                row(list.iter().enumerate().map(|(i, t)| {
+                    self.tile(
+                        t,
+                        TrackRef {
+                            list: which.clone(),
+                            index: i,
+                        },
+                        148.0,
+                        p,
+                    )
+                }))
+                .spacing(20)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 4.0,
+                    bottom: 14.0,
+                    left: 4.0,
+                }),
+            )
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new().width(6).scroller_width(6),
+            ))
+            .style(styles::scrollbar(p)),
         )
-        .direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new().width(6).scroller_width(6),
-        ))
-        .style(styles::scrollbar(p))
-        .into()
     }
 
-    fn grid<'a>(&'a self, list: &'a [Track], which: ListRef, p: Palette) -> Element<'a, Message> {
+    fn grid<'a>(&'a self, list: Vec<Track>, which: ListRef, p: Palette) -> Element<'a, Message> {
         iced::widget::Row::with_children(list.iter().enumerate().map(|(i, t)| {
             self.tile(
                 t,
@@ -309,7 +332,7 @@ impl App {
                 value: p.on_surface,
                 selection: crate::theme::alpha(p.primary, 0.35),
             });
-        let tail: Element<'_, Message> = if d.busy {
+        let tail: Element<'_, Message> = if d.busy || d.sp_busy {
             crate::widgets::spinner::spinner(
                 20.0,
                 self.now
@@ -402,18 +425,34 @@ impl App {
                     .push(h3("Spotify albums".into()))
                     .push(self.album_cards(&sp.albums, p));
             }
-            if !sp.tracks.is_empty() {
-                body = body.push(h3("Spotify songs".into())).push(self.tile_shelf(
-                    &sp.tracks,
-                    ListRef::SpotifySearch,
-                    p,
-                ));
+            if !sp.playlists.is_empty() {
+                body = body
+                    .push(h3("Spotify playlists".into()))
+                    .push(self.playlist_cards(&sp.playlists, None, p));
             }
-            body = body.push(h3(if d.busy {
-                "Searching…".into()
+            let providers = if self.spotify_enabled() {
+                "SoundCloud and Spotify"
             } else {
-                format!("Results for “{}”", d.query.trim())
-            }));
+                "SoundCloud"
+            };
+            let waiting: Vec<&str> = [(d.busy, "SoundCloud"), (d.sp_busy, "Spotify")]
+                .into_iter()
+                .filter_map(|(busy, name)| busy.then_some(name))
+                .collect();
+            body = body.push(
+                row![
+                    h3(format!("Songs for “{}”", d.query.trim())),
+                    Space::new().width(Length::Fill),
+                    text(if waiting.is_empty() {
+                        format!("From {providers}")
+                    } else {
+                        format!("Searching {}…", waiting.join(" and "))
+                    })
+                    .size(12)
+                    .color(p.on_surface_variant),
+                ]
+                .align_y(Alignment::Center),
+            );
             if !d.error.is_empty() {
                 body = body.push(
                     container(text(d.error.clone()).size(14))
@@ -422,17 +461,19 @@ impl App {
                         .style(styles::error_box(p)),
                 );
             }
-            if d.busy && d.results.is_empty() {
+            let songs = self.search_tracks();
+            let any_busy = d.busy || d.sp_busy;
+            if any_busy && songs.is_empty() {
                 body = body.push(
                     iced::widget::Row::with_children((0..12).map(|_| self.skeleton_tile(156.0, p)))
                         .spacing(20)
                         .wrap()
                         .vertical_spacing(32),
                 );
-            } else if !d.busy && d.error.is_empty() && d.results.is_empty() {
+            } else if !any_busy && d.error.is_empty() && songs.is_empty() {
                 body = body.push(text("Nothing found.").color(p.on_surface_variant));
             } else {
-                body = body.push(self.grid(&d.results, ListRef::Results, p));
+                body = body.push(self.grid(songs, ListRef::Results, p));
             }
         } else {
             let recent = self.recent.as_slice();
@@ -508,18 +549,19 @@ impl App {
                 }
             }
         }
-        scrollable(
-            container(body)
-                .padding(iced::Padding {
-                    top: 32.0,
-                    right: 40.0,
-                    bottom: 24.0,
-                    left: 40.0,
-                })
-                .width(Length::Fill),
+        smooth(
+            scrollable(
+                container(body)
+                    .padding(iced::Padding {
+                        top: 32.0,
+                        right: 40.0,
+                        bottom: 24.0,
+                        left: 40.0,
+                    })
+                    .width(Length::Fill),
+            )
+            .style(styles::scrollbar(p))
+            .height(Length::Fill),
         )
-        .style(styles::scrollbar(p))
-        .height(Length::Fill)
-        .into()
     }
 }

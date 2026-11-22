@@ -301,7 +301,7 @@ impl App {
             .on_input(on_input)
             .on_submit(on_submit)
             .size(size)
-            .padding([12, 0])
+            .padding([14, 16])
             .style(move |_, status| iced::widget::text_input::Style {
                 background: Color::TRANSPARENT.into(),
                 border: iced::Border {
@@ -315,7 +315,7 @@ impl App {
                     } else {
                         1.0
                     },
-                    radius: 0.0.into(),
+                    radius: 12.0.into(),
                 },
                 icon: p.on_surface_variant,
                 placeholder: crate::theme::alpha(p.on_surface_variant, 0.6),
@@ -398,7 +398,7 @@ impl App {
                     .on_input_maybe((!busy).then_some(|u| Message::Import(super::import::Msg::Url(u))))
                     .on_submit(Message::Import(super::import::Msg::Start))
                     .size(16)
-                    .padding([12, 0])
+                    .padding([14, 16])
                     .style(move |_, _| iced::widget::text_input::Style {
                         background: Color::TRANSPARENT.into(),
                         border: iced::Border { color: p.outline, width: 1.0, radius: 0.0.into() },

@@ -1,10 +1,10 @@
 //! Shared page chrome: header, empty state, tabs, play/shuffle buttons and the virtual list.
 
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, stack, text, Space};
 use iced::{Alignment, Element, Length};
 
 use crate::app::{App, Message};
-use crate::theme::{styles, Palette};
+use crate::theme::{alpha, styles, Palette};
 use crate::widgets::icon::{icon, Icon};
 use crate::widgets::logo;
 
@@ -126,20 +126,21 @@ pub fn empty_state<'a>(
 
 /// The standard scrolling page body (`.library`).
 pub fn page<'a>(content: impl Into<Element<'a, Message>>, p: Palette) -> Element<'a, Message> {
-    scrollable(
-        container(content)
-            .padding(iced::Padding {
-                top: 32.0,
-                right: 40.0,
-                bottom: 24.0,
-                left: 40.0,
-            })
-            .width(Length::Fill),
+    crate::widgets::smooth::smooth(
+        scrollable(
+            container(content)
+                .padding(iced::Padding {
+                    top: 32.0,
+                    right: 40.0,
+                    bottom: 24.0,
+                    left: 40.0,
+                })
+                .width(Length::Fill),
+        )
+        .on_scroll(|v| Message::Scrolled(v.absolute_offset().y, v.bounds().height))
+        .style(styles::scrollbar(p))
+        .height(Length::Fill),
     )
-    .on_scroll(|v| Message::Scrolled(v.absolute_offset().y, v.bounds().height))
-    .style(styles::scrollbar(p))
-    .height(Length::Fill)
-    .into()
 }
 
 /// Lays out only `start..end` of `total` fixed-height rows between two spacers.
@@ -260,6 +261,60 @@ impl App {
         })
         .into()
     }
+}
+
+/// Overlay open/close easing shared by the drawers, dialogs and popovers.
+impl App {
+    /// Steps every show/hide overlay toward its current state. Called after each message, so
+    /// the eased values are already moving when the next frame is drawn.
+    pub(crate) fn sync_presence(&mut self) {
+        let now = self.now;
+        let track = self.player.track.is_some();
+        let lyrics_open = self.settings().lyrics_open;
+        let states = [
+            ("pres-now", self.ui.now_playing && track),
+            ("pres-palette", self.ui.palette_open),
+            ("pres-import", self.ui.importing),
+            ("pres-drop", self.ui.drop_hover),
+            ("pres-lyrics", lyrics_open),
+            ("pres-menu", self.ui.menu.is_some()),
+            ("pres-tune", self.ui.tune.is_some()),
+            ("pres-picker", self.ui.lyrics.picker.is_some()),
+        ];
+        for (key, open) in states {
+            self.anim.presence(key, open, now);
+        }
+    }
+
+    /// `Some(t)` while an overlay is open or still fading out; `t` runs 0..=1.
+    pub(crate) fn overlay(&self, key: &str, open: bool) -> Option<f32> {
+        let t = self.anim.value(key, 0.0).clamp(0.0, 1.0);
+        (open || t > 0.001).then_some(t)
+    }
+}
+
+/// Fades a full-area overlay in or out: `content` rises by `rise` px while a `veil` in the
+/// surface colour covers it, lifting as `t` goes to 1.
+pub(crate) fn fade_up<'a>(
+    content: impl Into<Element<'a, Message>>,
+    t: f32,
+    rise: f32,
+    veil: iced::Color,
+) -> Element<'a, Message> {
+    stack![
+        container(content)
+            .padding(iced::Padding {
+                top: rise * (1.0 - t),
+                ..iced::Padding::ZERO
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(styles::fill(alpha(veil, 1.0 - t), 0.0)),
+    ]
+    .into()
 }
 
 #[cfg(test)]

@@ -64,6 +64,12 @@ pub struct Record {
 }
 
 impl Record {
+    pub fn has_synced(&self) -> bool {
+        self.synced_lyrics
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    }
+
     pub fn has_lyrics(&self) -> bool {
         self.synced_lyrics.as_deref().is_some_and(|s| !s.is_empty())
             || self.plain_lyrics.as_deref().is_some_and(|s| !s.is_empty())

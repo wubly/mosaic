@@ -1,6 +1,6 @@
 //! Port of `Queue.js`.
 
-use iced::widget::{column, text};
+use iced::widget::{column, container, text};
 use iced::{Element, Task};
 
 use super::common::{empty_state, icon_button, page, tonal_button};
@@ -115,6 +115,43 @@ impl App {
                     .size(14)
                     .color(p.on_surface_variant),
             );
+        }
+        let spotify = &self.ui.spotify.queue.1;
+        if self.playing_spotify() && !spotify.is_empty() {
+            body = body
+                .push(
+                    container(
+                        column![
+                            text("Up next on Spotify")
+                                .size(16)
+                                .color(p.on_surface_variant),
+                            text("What Spotify plays when your queue here runs out")
+                                .size(12)
+                                .color(p.on_surface_variant),
+                        ]
+                        .spacing(2),
+                    )
+                    .padding(iced::Padding {
+                        top: 32.0,
+                        bottom: 12.0,
+                        ..iced::Padding::ZERO
+                    }),
+                )
+                .push(
+                    column(spotify.iter().enumerate().map(|(i, t)| {
+                        self.track_row(
+                            t,
+                            i,
+                            TrackRef {
+                                list: ListRef::SpotifyQueue,
+                                index: i,
+                            },
+                            true,
+                            p,
+                        )
+                    }))
+                    .spacing(6),
+                );
         }
         page(body, p)
     }

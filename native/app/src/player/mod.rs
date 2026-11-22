@@ -141,6 +141,11 @@ pub enum PlayerInput {
     SettingsChanged(Settings),
     SpotifyAvailable(bool),
     Restore(Session),
+    /// Spotify moved on from the track with URI `from` to `track` by itself.
+    AdoptSpotify {
+        from: String,
+        track: Track,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -340,6 +345,7 @@ impl PlayerController {
             PlayerInput::SettingsChanged(s) => self.on_settings(s, fx),
             PlayerInput::SpotifyAvailable(on) => self.spotify_available = on,
             PlayerInput::Restore(session) => self.restore(session),
+            PlayerInput::AdoptSpotify { from, track } => self.adopt_spotify(&from, track, now, fx),
         }
     }
 
@@ -607,6 +613,10 @@ impl PlayerController {
                 .as_ref()
                 .map_or(0.0, |t| t.duration as f64 / 1000.0)
         };
+        // Audio moving forward means it isn't buffering, whatever the last buffering event said.
+        if self.loading && self.playing && secs > self.time.current + 0.05 {
+            self.loading = false;
+        }
         let trim = self.settings.skip_silence.then_some(self.silence).flatten();
         self.time = Time {
             current: secs,
@@ -740,6 +750,27 @@ impl PlayerController {
                 seed,
                 purpose: RelatedPurpose::Autoplay,
             });
+        }
+    }
+
+    /// Spotify carried on into `track` (autoplay, or a skip from another device). With nothing
+    /// else lined up here, follow it so the player shows what's audible; otherwise Mosaic's own
+    /// next track takes over as usual.
+    fn adopt_spotify(&mut self, from: &str, track: Track, now: Instant, fx: &mut Vec<Effect>) {
+        let current = self.track.as_ref().and_then(|t| t.uri.as_deref());
+        if current != Some(from) || self.settings.repeat != Repeat::Off {
+            return;
+        }
+        if self.next_playable(1).is_some() {
+            return;
+        }
+        let _ = self.queue.play_next(&track);
+        self.queue_dirty = true;
+        // The old track's end may already have been handled (and found nothing next).
+        if !self.playing && !self.loading {
+            if let Some(index) = self.next_playable(1) {
+                self.play_index(index, LoadOpts::default(), now, fx);
+            }
         }
     }
 

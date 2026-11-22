@@ -31,13 +31,4 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - name: Package
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          cargo install cargo-packager --locked
-          cargo packager --release -p mosaic
-      - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
-        with:
-          name: mosaic-${{ matrix.os }}
-          path: native/target/release/packager/*
+      # Installers are built and published by release.yml.

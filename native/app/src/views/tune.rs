@@ -279,7 +279,8 @@ impl App {
     }
 
     /// The popover and a click-away layer, positioned over the tune button.
-    pub(crate) fn tune_overlay(&self, tab: Tab, p: Palette) -> Element<'_, Message> {
+    /// The popover; `t` is its open/close progress (0..=1).
+    pub(crate) fn tune_overlay(&self, tab: Tab, t: f32, p: Palette) -> Element<'_, Message> {
         let tabs = row([
             (Tab::Equalizer, "Equalizer"),
             (Tab::Speed, "Speed"),
@@ -301,39 +302,55 @@ impl App {
                         2.0
                     )),
             ]
-            .spacing(12)
+            .spacing(10)
             .align_x(Alignment::Center);
             button(
                 container(label)
                     .center_x(Length::Fill)
                     .padding(iced::Padding {
-                        top: 14.0,
+                        top: 11.0,
                         ..iced::Padding::ZERO
                     }),
             )
             .width(Length::Fill)
-            .height(48)
+            .height(44)
             .padding(0)
-            .style(styles::plain(p, 0.0))
+            // Rounded, and inset from the popover's corners, so the hover fill stays inside.
+            .style(styles::plain(p, 14.0))
             .on_press(Message::Tune(Msg::Tab(t)))
             .into()
         }))
-        .padding([0, 8]);
+        .spacing(4)
+        .padding(iced::Padding {
+            top: 8.0,
+            right: 14.0,
+            bottom: 0.0,
+            left: 14.0,
+        });
         let pane = match tab {
             Tab::Equalizer => self.eq_pane(p),
             Tab::Speed => self.speed_pane(p),
             Tab::Sleep => self.sleep_pane(p),
         };
+        // A new tab's pane slides in from the side it lives on.
+        let slide = 1.0 - self.anim.value("tune-pane", 1.0).clamp(0.0, 1.0);
+        let dir = self.anim.value("tune-dir", 1.0);
+        let shift = 28.0 * slide * dir;
         let popover = container(column![
             tabs,
-            container(pane).padding(iced::Padding {
-                top: 16.0,
-                right: 20.0,
-                bottom: 20.0,
-                left: 20.0
-            })
+            container(pane)
+                .padding(iced::Padding {
+                    top: 16.0,
+                    right: (20.0 - shift).max(0.0),
+                    bottom: 20.0,
+                    left: (20.0 + shift).max(0.0),
+                })
+                .clip(true)
         ])
         .width(372)
+        // Unfolds upward from the bar while rising into place.
+        .max_height(560.0 * ease_out(t))
+        .clip(true)
         .style(styles::popup(p, 28.0));
         let bar = self.settings().bar_height as f32;
         let placed = container(mouse_area(popover).on_press(Message::Tune(Msg::Tab(tab))))
@@ -343,7 +360,7 @@ impl App {
             .align_y(iced::alignment::Vertical::Bottom)
             .padding(iced::Padding {
                 right: 244.0,
-                bottom: bar + 16.0 + 18.0,
+                bottom: bar + 16.0 + 18.0 - 16.0 * (1.0 - t),
                 ..iced::Padding::ZERO
             });
         stack![
@@ -352,6 +369,19 @@ impl App {
             placed
         ]
         .into()
+    }
+}
+
+fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+pub fn tab_index(t: Tab) -> f32 {
+    match t {
+        Tab::Equalizer => 0.0,
+        Tab::Speed => 1.0,
+        Tab::Sleep => 2.0,
     }
 }
 

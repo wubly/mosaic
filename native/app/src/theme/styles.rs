@@ -212,20 +212,6 @@ pub fn popup(p: Palette, radius: f32) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-pub fn toast(p: Palette) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        background: bg(p.on_surface),
-        text_color: Some(p.surface),
-        border: round(12.0),
-        shadow: Shadow {
-            color: Color::from_rgba8(0, 0, 0, 0.5),
-            offset: Vector::new(0.0, 6.0),
-            blur_radius: 20.0,
-        },
-        ..container::Style::default()
-    }
-}
-
 pub fn error_box(p: Palette) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: bg(p.error_container),

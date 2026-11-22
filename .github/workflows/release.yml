@@ -1,0 +1,181 @@
+name: release
+
+# Push a tag like v0.5.0 (it must match the workspace version in native/Cargo.toml) to build
+# installers for Linux, Windows and macOS and publish them as a GitHub release. Running it by
+# hand (workflow_dispatch) builds everything and keeps the files as workflow artifacts only.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: native
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGER_VERSION: 0.11.8
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
+            exit 1
+          fi
+
+  linux:
+    needs: version
+    # The oldest supported runner, so the binary runs on older glibc.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # linuxdeploy is itself an AppImage; runners have no FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libfuse2 file
+      - run: cargo install cargo-packager --locked --version "$PACKAGER_VERSION"
+      - run: cargo build --release -p mosaic
+      - run: cargo packager --release -p mosaic -f appimage,deb
+      - name: Collect
+        run: |
+          mkdir -p ../dist
+          cp target/release/packager/*.AppImage "../dist/Mosaic-$VERSION-x86_64.AppImage"
+          cp target/release/packager/*.deb "../dist/mosaic_${VERSION}_amd64.deb"
+          stage="mosaic-$VERSION-linux-x86_64"
+          mkdir "$stage"
+          cp target/release/mosaic "$stage/"
+          cp packaging/linux/app.mosaic.player.desktop packaging/linux/app.mosaic.player.metainfo.xml assets/icon.png "$stage/"
+          tar czf "../dist/$stage.tar.gz" "$stage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - run: cargo install cargo-packager --locked --version "$PACKAGER_VERSION"
+      - run: cargo build --release -p mosaic
+      - run: cargo packager --release -p mosaic -f nsis
+      - name: Collect
+        run: |
+          mkdir -p ../dist
+          cp target/release/packager/*-setup.exe "../dist/Mosaic-$VERSION-windows-x64-setup.exe"
+          # Portable build: the bare executable, no installer.
+          cp target/release/mosaic.exe "../dist/Mosaic-$VERSION-windows-x64-portable.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      # Developer ID signing and notarization happen only when these secrets exist; otherwise
+      # the app is ad-hoc signed and users must allow it in System Settings > Privacy & Security.
+      # They go in under other names because cargo-packager treats an empty variable as set.
+      SECRET_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      SECRET_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      SECRET_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
+      SECRET_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - run: cargo install cargo-packager --locked --version "$PACKAGER_VERSION"
+      - name: Build universal binary
+        run: |
+          cargo build --release -p mosaic --target aarch64-apple-darwin
+          cargo build --release -p mosaic --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/mosaic \
+            target/aarch64-apple-darwin/release/mosaic target/x86_64-apple-darwin/release/mosaic
+      - name: Package
+        run: |
+          if [[ -n "$SECRET_APPLE_SIGNING_IDENTITY" && -n "$SECRET_APPLE_CERTIFICATE" ]]; then
+            perl -0pi -e 's/signing-identity = "-"/signing-identity = "$ENV{SECRET_APPLE_SIGNING_IDENTITY}"/' app/Cargo.toml
+            export APPLE_CERTIFICATE="$SECRET_APPLE_CERTIFICATE"
+            export APPLE_CERTIFICATE_PASSWORD="$SECRET_APPLE_CERTIFICATE_PASSWORD"
+            if [[ -n "$SECRET_APPLE_ID" ]]; then
+              export APPLE_ID="$SECRET_APPLE_ID" APPLE_PASSWORD="$SECRET_APPLE_PASSWORD" APPLE_TEAM_ID="$SECRET_APPLE_TEAM_ID"
+            fi
+            echo "Signing with a Developer ID"
+          else
+            echo "No Apple secrets: ad-hoc signing"
+          fi
+          cargo packager --release -p mosaic --target universal-apple-darwin -f app,dmg
+      - name: Check the signature
+        run: codesign --verify --deep --strict --verbose=2 target/universal-apple-darwin/release/packager/*.app
+      - name: Collect
+        run: |
+          mkdir -p ../dist
+          cp target/universal-apple-darwin/release/packager/*.dmg "../dist/Mosaic-$VERSION-macos-universal.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create or update the release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+            gh release create "$TAG" dist/* --title "Mosaic $TAG" --generate-notes "${prerelease[@]}"
+          fi

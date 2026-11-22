@@ -1,5 +1,5 @@
-//! Port of `LyricsPanel.js` and `LyricsPicker.js`. Each word is a dim label with a bright copy
-//! clipped to its progress, which is the CSS `background-clip: text` gradient.
+//! Port of `LyricsPanel.js` and `LyricsPicker.js`. Synced lyrics only; the playing line lights up
+//! as a whole (word timing is too often off to sweep through a line).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -8,17 +8,17 @@ use iced::widget::{
     button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space,
 };
 use iced::{Alignment, Element, Font, Length, Task};
-use mosaic_core::lyrics_timing::{build_timings, clamp01, LyricLine, WordTiming};
+use mosaic_core::lyrics_timing::{build_timings, LyricLine, WordTiming};
 use mosaic_core::model::{Track, TrackId};
 use mosaic_services::lyrics::service::{Candidates, LyricsArgs};
 use mosaic_services::lyrics::{Lyrics, LyricsKind};
 
 use super::artwork_of;
+use super::common;
 use crate::app::{App, Message};
 use crate::text_measure;
-use crate::theme::{alpha, styles, Palette};
-use crate::widgets::icon::{icon, Icon};
-use crate::widgets::switch::switch;
+use crate::theme::{alpha, mix, styles, Palette};
+use crate::widgets::icon::{icon, outlined, Icon};
 
 pub const SCROLL_ID: &str = "lyrics-scroll";
 const LOOKAHEAD: f64 = 0.04;
@@ -81,7 +81,6 @@ pub enum Msg {
     Search,
     Pick(Option<String>),
     Picked(TrackId, Box<Lyrics>),
-    Genius(bool),
 }
 
 /// Per-word widths for every line, and the width of a space.
@@ -365,20 +364,6 @@ impl App {
                 )
             }
             Msg::Picked(id, lyrics) => self.on_lyrics(Msg::Loaded(id, lyrics)),
-            Msg::Genius(on) => {
-                self.services.update_config(|c| c.genius = Some(on));
-                if on
-                    && self
-                        .ui
-                        .lyrics
-                        .lyrics
-                        .as_ref()
-                        .is_some_and(|l| l.meta.id.is_none())
-                {
-                    return self.on_lyrics(Msg::Pick(None));
-                }
-                Task::none()
-            }
         }
     }
 
@@ -394,14 +379,18 @@ impl App {
                 p.on_surface_variant,
             )
         };
+        // A fixed-height button puts its content at the top; centre it in the pill.
         button(
-            row![
-                icon(Icon::Subtitles, 16.0).color(fg),
-                text(label).size(12).color(fg),
-                icon(Icon::ExpandMore, 18.0).color(fg)
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
+            iced::widget::container(
+                row![
+                    outlined(Icon::Subtitles, 16.0).color(fg),
+                    text(label).size(12).color(fg),
+                    icon(Icon::ExpandMore, 18.0).color(fg)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .center_y(Length::Fill),
         )
         .height(30)
         .padding(iced::Padding {
@@ -427,71 +416,29 @@ impl App {
         .into()
     }
 
-    fn word<'a>(
-        &self,
-        w: &str,
-        width: f32,
-        progress: f32,
-        v: Variant,
-        op: f32,
-        p: Palette,
-    ) -> Element<'a, Message> {
-        let size = v.font_size();
-        let h = v.line_height();
-        let dim = alpha(p.on_surface, 0.42 * op);
-        let lit = alpha(p.on_surface, op);
-        let label = |c: iced::Color| {
-            text(w.to_string())
-                .size(size)
-                .font(LINE_FONT)
-                .line_height(iced::Pixels(h))
-                .wrapping(text::Wrapping::None)
-                .color(c)
-        };
-        if progress <= 0.001 {
-            return container(label(dim))
-                .width(width + 1.0)
-                .height(h)
-                .clip(true)
-                .into();
-        }
-        if progress >= 0.999 {
-            return container(label(lit))
-                .width(width + 1.0)
-                .height(h)
-                .clip(true)
-                .into();
-        }
-        stack![
-            container(label(dim)).width(width + 1.0).height(h),
-            container(label(lit))
-                .width(width * progress)
-                .height(h)
-                .clip(true),
-        ]
-        .width(width + 1.0)
-        .height(h)
-        .into()
-    }
-
     fn lyric_lines(&self, v: Variant, p: Palette) -> Element<'_, Message> {
         let st = &self.ui.lyrics;
-        let (widths, space) = st.widths(v);
-        let t = self.display_position() + LOOKAHEAD;
+        let (_, space) = st.widths(v);
         let pos = self.anim.value("lyr-pos", st.active as f32);
+        let size = v.font_size();
+        let h = v.line_height();
         let mut col = column![].width(Length::Fill);
         for (i, line) in st.lines().iter().enumerate() {
-            let op = line_opacity((i as f32 - pos).abs());
+            let distance = (i as f32 - pos).abs();
+            // The playing line is fully lit; the glow eases between lines as `pos` springs.
+            let lit = (1.0 - distance).clamp(0.0, 1.0);
+            let op = line_opacity(distance);
+            let color = alpha(p.on_surface, (0.42 + 0.58 * lit) * op.max(lit));
             let mut words = iced::widget::Row::new().spacing(space).width(Length::Fill);
-            for (k, w) in st.timings[i].iter().enumerate() {
-                let progress = if (i as isize) < st.active {
-                    1.0
-                } else if (i as isize) > st.active {
-                    0.0
-                } else {
-                    clamp01((t - w.s) / (w.e - w.s).max(0.05)) as f32
-                };
-                words = words.push(self.word(&w.w, widths[i][k], progress, v, op, p));
+            for w in &st.timings[i] {
+                words = words.push(
+                    text(w.w.clone())
+                        .size(size)
+                        .font(LINE_FONT)
+                        .line_height(iced::Pixels(h))
+                        .wrapping(text::Wrapping::None)
+                        .color(color),
+                );
             }
             let words = if v == Variant::Bare {
                 words.wrap().align_x(Alignment::Center)
@@ -532,16 +479,28 @@ impl App {
                 .color(p.on_surface_variant)
                 .into(),
             Some(l) if !l.synced.is_empty() => self.lyric_lines(v, p),
-            Some(l) if !l.plain.is_empty() => text(l.plain.clone())
-                .size(16)
-                .line_height(iced::Pixels(26.0))
-                .color(p.on_surface_variant)
-                .into(),
-            Some(_) if v == Variant::Large => {
-                container(self.source_pill(p)).center_x(Length::Fill).into()
-            }
+            Some(_) if v == Variant::Large => column![
+                text("No synced lyrics for this track.")
+                    .size(16)
+                    .color(p.on_surface_variant),
+                self.source_pill(p)
+            ]
+            .spacing(12)
+            .align_x(Alignment::Center)
+            .width(Length::Fill)
+            .into(),
+            Some(_) if v == Variant::Bare => column![
+                text("No synced lyrics for this track.")
+                    .size(14)
+                    .color(p.on_surface_variant),
+                self.source_pill(p)
+            ]
+            .spacing(10)
+            .align_x(Alignment::Center)
+            .width(Length::Fill)
+            .into(),
             Some(_) => column![
-                text("No lyrics found for this track.")
+                text("No synced lyrics for this track.")
                     .size(14)
                     .color(p.on_surface_variant),
                 self.source_pill(p)
@@ -556,7 +515,7 @@ impl App {
         } else {
             28.0
         };
-        scrollable(container(body).width(Length::Fill).padding(iced::Padding {
+        let scroll = scrollable(container(body).width(Length::Fill).padding(iced::Padding {
             top,
             right: side,
             bottom,
@@ -568,7 +527,45 @@ impl App {
             s.vertical_rail.scroller.background = iced::Color::TRANSPARENT.into();
             s
         })
-        .height(Length::Fill)
+        .height(Length::Fill);
+        // Lines fade into a soft shadow at the edges instead of being cut off flat.
+        let shade = match v {
+            Variant::Large => mix(p.surface, iced::Color::TRANSPARENT, 0.5),
+            _ => mix(p.surface, iced::Color::TRANSPARENT, 0.6),
+        };
+        let edge = |down: bool, height: f32| {
+            let (from, to) = if down {
+                (shade, iced::Color::TRANSPARENT)
+            } else {
+                (iced::Color::TRANSPARENT, shade)
+            };
+            container(Space::new())
+                .width(Length::Fill)
+                .height(height)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Gradient(
+                        iced::gradient::Linear::new(std::f32::consts::PI)
+                            .add_stop(0.0, from)
+                            .add_stop(1.0, to)
+                            .into(),
+                    )),
+                    ..container::Style::default()
+                })
+        };
+        let scroll = crate::widgets::smooth::smooth(scroll);
+        if st.lines().is_empty() {
+            return scroll;
+        }
+        stack![
+            scroll,
+            column![
+                edge(true, 48.0),
+                Space::new().height(Length::Fill),
+                edge(false, 72.0),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill),
+        ]
         .into()
     }
 
@@ -609,7 +606,7 @@ impl App {
         .padding(iced::Padding {
             top: 28.0,
             right: 24.0,
-            bottom: 0.0,
+            bottom: 12.0,
             left: 24.0,
         });
         let base: Element<'_, Message> = column![head, self.lyrics_body(Variant::Panel, p)].into();
@@ -622,7 +619,12 @@ impl App {
         p: Palette,
     ) -> Element<'a, Message> {
         match &self.ui.lyrics.picker {
-            Some(picker) => stack![base, self.picker_view(picker, p)].into(),
+            Some(picker) => {
+                let t = self.anim.value("pres-picker", 1.0).clamp(0.0, 1.0);
+                let sheet =
+                    common::fade_up(self.picker_view(picker, p), t, 12.0, p.surface_container);
+                stack![base, sheet].into()
+            }
             None => base,
         }
     }
@@ -690,62 +692,14 @@ impl App {
         .height(40)
         .center_y(40)
         .style(styles::fill(p.surface_container_high, 20.0));
-        let legend = column![
-            row![
-                container(self.kind_badge(LyricsKind::Word, p)).width(88),
-                text("Timed word by word")
-                    .size(12)
-                    .color(p.on_surface_variant)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-            row![
-                container(self.kind_badge(LyricsKind::Synced, p)).width(88),
-                text("Timed line by line")
-                    .size(12)
-                    .color(p.on_surface_variant)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-            row![
-                container(self.kind_badge(LyricsKind::Plain, p)).width(88),
-                text("Plain text, no timing")
-                    .size(12)
-                    .color(p.on_surface_variant)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+        let mut body = column![
+            header,
+            search,
+            text("Synced lyrics from LRCLIB for this song and artist")
+                .size(12)
+                .color(p.on_surface_variant),
         ]
-        .spacing(6)
-        .padding([2, 4]);
-
-        let config = self.services.config();
-        let mut body = column![header, search, legend].spacing(12);
-        if config.beta == Some(true) {
-            let on = config.genius == Some(true);
-            body = body.push(
-                container(
-                    row![
-                        column![
-                            text("Genius (beta)").size(14),
-                            text(if on {
-                                "On. Used when LRCLIB has nothing; plain lyrics only."
-                            } else {
-                                "Scrape plain, unsynced lyrics from genius.com when LRCLIB has nothing. Can break if Genius changes its pages."
-                            })
-                            .size(12)
-                            .color(p.on_surface_variant),
-                        ]
-                        .width(Length::Fill),
-                        switch(on, p, Message::Lyrics(Msg::Genius(!on))),
-                    ]
-                    .spacing(16)
-                    .align_y(Alignment::Center),
-                )
-                .padding([10, 14])
-                .style(styles::fill(crate::theme::mix(p.primary, p.surface_container_high, 0.10), 16.0)),
-            );
-        }
+        .spacing(12);
         let mut list = column![].spacing(2);
         let is_custom = current.is_some_and(|m| m.origin == "custom");
         if is_custom {
@@ -873,11 +827,11 @@ impl App {
                 }
             }
         }
-        body = body.push(
+        body = body.push(crate::widgets::smooth::smooth(
             scrollable(list)
                 .style(styles::scrollbar(p))
                 .height(Length::Fill),
-        );
+        ));
         mouse_area(
             container(body)
                 .padding(iced::Padding {

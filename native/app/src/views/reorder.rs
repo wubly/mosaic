@@ -62,7 +62,7 @@ impl App {
                     from,
                     to: from,
                     len,
-                    start_y: self.cursor.y,
+                    start_y: crate::app::cursor_now().y,
                 });
             }
         }
@@ -159,6 +159,7 @@ impl App {
                 .width(Length::Fill),
             ]
             .spacing(12)
+            .height(Length::Fill)
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)

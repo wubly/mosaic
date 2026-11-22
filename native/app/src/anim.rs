@@ -2,6 +2,9 @@ use std::time::{Duration, Instant};
 
 const SUBSTEP: f32 = 1.0 / 240.0;
 
+/// Length of the fade and slide for overlays, panels and toasts.
+pub const OVERLAY_MS: u64 = 200;
+
 /// `MOSAIC_REDUCED_MOTION=1` snaps every spring and tween to its target.
 pub fn reduced_motion() -> bool {
     std::env::var_os("MOSAIC_REDUCED_MOTION").is_some_and(|v| v == "1")
@@ -85,6 +88,8 @@ pub enum Ease {
     Linear,
     /// `cubic-bezier(.3, 0, 0, 1)`, used for the wavy amplitude.
     Out,
+    /// Material's emphasized decelerate, `cubic-bezier(.05, .7, .1, 1)`: content arriving.
+    Decelerate,
 }
 
 impl Ease {
@@ -92,6 +97,7 @@ impl Ease {
         match self {
             Ease::Linear => t,
             Ease::Out => cubic_bezier(0.3, 0.0, 0.0, 1.0, t),
+            Ease::Decelerate => cubic_bezier(0.05, 0.7, 0.1, 1.0, t),
         }
     }
 }
@@ -180,6 +186,18 @@ impl AnimationClock {
         ease: Ease,
     ) {
         let from = self.get(key).unwrap_or(target);
+        self.tween_from(key, from, target, now, dur, ease);
+    }
+
+    fn tween_from(
+        &mut self,
+        key: &'static str,
+        from: f32,
+        target: f32,
+        now: Instant,
+        dur: Duration,
+        ease: Ease,
+    ) {
         if self
             .values
             .get(key)
@@ -189,6 +207,25 @@ impl AnimationClock {
         }
         let tween = Tween::new(from, target, now, dur, ease);
         self.values.insert(key, (from, Motion::Tween(tween)));
+    }
+
+    /// Eases a show/hide value toward 1 (open) or 0 (closed) over `OVERLAY_MS`.
+    /// Absent keys read as 0 (see `value`), so an overlay that opens for the first time
+    /// fades and slides in from nothing. Closing a key that never opened does nothing.
+    pub fn presence(&mut self, key: &'static str, open: bool, now: Instant) {
+        if !open && self.get(key).is_none() {
+            return;
+        }
+        let target = if open { 1.0 } else { 0.0 };
+        let from = self.value(key, 0.0);
+        self.tween_from(
+            key,
+            from,
+            target,
+            now,
+            Duration::from_millis(OVERLAY_MS),
+            Ease::Out,
+        );
     }
 
     pub fn get(&self, key: &str) -> Option<f32> {
@@ -302,5 +339,30 @@ mod tests {
         }
         assert!(!clock.is_active(t));
         assert_eq!(clock.value("pill", 0.0), 1.0);
+    }
+
+    #[test]
+    fn presence_fades_in_and_back_out() {
+        let mut clock = AnimationClock::default();
+        let start = Instant::now();
+        clock.presence("panel", false, start);
+        assert_eq!(clock.get("panel"), None, "closed keys are never created");
+        clock.presence("panel", true, start);
+        assert_eq!(clock.value("panel", 0.0), 0.0);
+        assert!(clock.is_active(start));
+        let mut t = start;
+        for _ in 0..30 {
+            t += Duration::from_millis(16);
+            clock.tick(t);
+        }
+        assert_eq!(clock.value("panel", 0.0), 1.0);
+        clock.presence("panel", false, t);
+        assert!(clock.is_active(t));
+        for _ in 0..30 {
+            t += Duration::from_millis(16);
+            clock.tick(t);
+        }
+        assert_eq!(clock.value("panel", 1.0), 0.0);
+        assert!(!clock.is_active(t));
     }
 }

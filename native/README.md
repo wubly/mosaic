@@ -41,6 +41,32 @@ cargo test -- --ignored net_      # network tests (SoundCloud, lrclib)
 cargo build --no-default-features # without librespot
 ```
 
+## Releases
+
+Bump `version` in `[workspace.package]` (`Cargo.toml`), commit, then push a matching tag:
+
+```sh
+git tag v0.5.0 && git push origin v0.5.0
+```
+
+`.github/workflows/release.yml` builds the Linux AppImage, `.deb` and tarball (on Ubuntu 22.04 for glibc reach), the
+Windows NSIS installer and portable `.exe`, and a universal (arm64 + x86_64) macOS `.dmg`, then attaches them all,
+plus `SHA256SUMS.txt`, to a GitHub release. Tags with a `-` (`v0.6.0-beta.1`) become prereleases. Running the
+workflow by hand builds everything as workflow artifacts without publishing.
+
+The macOS app is ad-hoc signed unless the repository has `APPLE_CERTIFICATE` (base64 `.p12`),
+`APPLE_CERTIFICATE_PASSWORD` and `APPLE_SIGNING_IDENTITY` secrets; add `APPLE_ID`, `APPLE_PASSWORD` (app-specific)
+and `APPLE_TEAM_ID` to notarize too. Ad-hoc builds open only after "Open Anyway" in System Settings > Privacy &
+Security. Windows builds are unsigned, so SmartScreen warns on first run.
+
+## macOS and Windows notes
+
+- macOS uses native window decorations (traffic lights over a transparent title bar) since winit cannot drag-resize
+  an undecorated window there; `MOSAIC_DECORATIONS=0` turns them off.
+- The tray icon and media controls (Now Playing, SMTC) start once the main window has opened: macOS needs the event
+  loop running and SMTC needs the window's HWND.
+- Windows release builds use the GUI subsystem, so `--version` and the debug CLI print nothing there.
+
 ## Linux notes
 
 - Audio goes through ALSA via cpal (PipeWire/Pulse provide the shim); `libasound2` / `alsa-lib` is the runtime dependency.

@@ -32,6 +32,7 @@ pub struct SearchResults {
     pub tracks: Vec<Track>,
     pub artists: Vec<ArtistCard>,
     pub albums: Vec<AlbumCard>,
+    pub playlists: Vec<super::library::PlaylistCard>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,6 +40,17 @@ pub struct Library {
     pub saved: Vec<Track>,
     pub albums: Vec<AlbumCard>,
     pub artists: Vec<ArtistCard>,
+}
+
+/// Everything an account holds, for a one-shot import into Mosaic.
+#[derive(Clone, Debug, Default)]
+pub struct Everything {
+    pub liked: Vec<Track>,
+    pub playlists: Vec<(String, Vec<Track>)>,
+    pub top: Vec<Track>,
+    /// Newest first, with the epoch-millisecond play time.
+    pub recent: Vec<(Track, i64)>,
+    pub mix: Vec<Track>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,7 +66,7 @@ pub struct AlbumPage {
     pub tracks: Vec<Track>,
 }
 
-fn image(list: &Value, i: usize) -> String {
+pub(crate) fn image(list: &Value, i: usize) -> String {
     let Some(list) = list.as_array().filter(|l| !l.is_empty()) else {
         return String::new();
     };
@@ -64,7 +76,7 @@ fn image(list: &Value, i: usize) -> String {
         .to_string()
 }
 
-fn text(v: &Value) -> String {
+pub(crate) fn text(v: &Value) -> String {
     v.as_str().unwrap_or("").to_string()
 }
 
@@ -142,7 +154,7 @@ pub fn usable<'a>(list: impl IntoIterator<Item = &'a Value>) -> Vec<Track> {
         .collect()
 }
 
-fn items(v: &Value) -> impl Iterator<Item = &Value> {
+pub(crate) fn items(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
 }
 
@@ -153,7 +165,7 @@ impl Services {
                 "/search",
                 &[
                     ("q", q.into()),
-                    ("type", "track,artist,album".into()),
+                    ("type", "track,artist,album,playlist".into()),
                     ("limit", limit.to_string()),
                 ],
             )
@@ -169,6 +181,11 @@ impl Services {
                 .filter(|a| !a.is_null())
                 .take(10)
                 .map(album_card)
+                .collect(),
+            playlists: items(&json["playlists"]["items"])
+                .filter(|p| !p.is_null())
+                .take(10)
+                .map(super::library::playlist_card)
                 .collect(),
         })
     }
@@ -195,6 +212,101 @@ impl Services {
         }
     }
 
+    /// Follows `next` links from `first`, collecting each page's `items`.
+    async fn spotify_pages(&self, path: &str, query: &[(&str, String)], cap: usize) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut page = self.spotify_api(path, query).await.unwrap_or(Value::Null);
+        loop {
+            out.extend(items(&page["items"]).cloned());
+            let next = page["next"].as_str().map(str::to_string);
+            match next {
+                Some(url) if out.len() < cap => {
+                    page = self.spotify_api(&url, &[]).await.unwrap_or(Value::Null);
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// Liked songs, playlists, top tracks, listening history and a mix built from top artists.
+    /// Each part degrades to empty when the token lacks its scope.
+    pub async fn spotify_everything(&self) -> Everything {
+        let market = self.spotify_country();
+        let liked = self
+            .spotify_pages("/me/tracks", &[("limit", "50".into())], 5000)
+            .await;
+        let liked = usable(liked.iter().map(|i| &i["track"]));
+        let lists = self
+            .spotify_pages("/me/playlists", &[("limit", "50".into())], 200)
+            .await;
+        let mut playlists = Vec::new();
+        for l in lists.iter().take(60) {
+            let (Some(id), Some(name)) = (l["id"].as_str(), l["name"].as_str()) else {
+                continue;
+            };
+            let rows = self
+                .spotify_pages(
+                    &format!("/playlists/{id}/tracks"),
+                    &[("limit", "100".into()), ("market", market.clone())],
+                    3000,
+                )
+                .await;
+            let tracks = usable(rows.iter().map(|i| &i["track"]));
+            if !tracks.is_empty() {
+                playlists.push((name.to_string(), tracks));
+            }
+        }
+        let top = self
+            .spotify_api(
+                "/me/top/tracks",
+                &[("limit", "50".into()), ("time_range", "medium_term".into())],
+            )
+            .await
+            .unwrap_or(Value::Null);
+        let top = usable(items(&top["items"]));
+        let recent = self
+            .spotify_api("/me/player/recently-played", &[("limit", "50".into())])
+            .await
+            .unwrap_or(Value::Null);
+        let recent = items(&recent["items"])
+            .filter(|i| i["track"]["name"].as_str().is_some())
+            .map(|i| {
+                let at =
+                    chrono::DateTime::parse_from_rfc3339(i["played_at"].as_str().unwrap_or(""))
+                        .map_or(0, |d| d.timestamp_millis());
+                (slim(&i["track"]), at)
+            })
+            .collect();
+        let artists = self
+            .spotify_api(
+                "/me/top/artists",
+                &[("limit", "10".into()), ("time_range", "medium_term".into())],
+            )
+            .await
+            .unwrap_or(Value::Null);
+        let mut mix = Vec::new();
+        let mut seen: std::collections::HashSet<_> = top.iter().map(|t| t.id.clone()).collect();
+        for a in items(&artists["items"]) {
+            if let Some(id) = a["id"].as_str() {
+                if let Ok(page) = self.spotify_artist(id).await {
+                    for t in page.top.into_iter().take(4) {
+                        if seen.insert(t.id.clone()) {
+                            mix.push(t);
+                        }
+                    }
+                }
+            }
+        }
+        Everything {
+            liked,
+            playlists,
+            top,
+            recent,
+            mix,
+        }
+    }
+
     async fn spotify_artist_albums(&self, id: &str) -> Vec<AlbumCard> {
         let json = self
             .spotify_api(
@@ -211,6 +323,27 @@ impl Services {
         items(&json["items"])
             .filter(|a| seen.insert(text(&a["name"]).to_lowercase()))
             .map(album_card)
+            .collect()
+    }
+
+    /// Full tracks for `spotify:track:` URIs, in order; ones that fail to load are skipped.
+    pub async fn spotify_tracks(&self, uris: &[String]) -> Vec<Track> {
+        let market = self.spotify_country();
+        let fetches = uris.iter().map(|uri| {
+            let id = uri.rsplit(':').next().unwrap_or_default().to_string();
+            let market = market.clone();
+            async move {
+                self.spotify_api(&format!("/tracks/{id}"), &[("market", market)])
+                    .await
+                    .ok()
+            }
+        });
+        futures::future::join_all(fetches)
+            .await
+            .into_iter()
+            .flatten()
+            .filter(|t| t["id"].is_string())
+            .map(|t| slim(&t))
             .collect()
     }
 
