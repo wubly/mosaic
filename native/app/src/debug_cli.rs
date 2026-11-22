@@ -80,7 +80,38 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             }
             println!("{} tracks", tracks.len());
         }
+        "play" => play_file(arg(1)?)?,
         other => bail!("unknown debug command `{other}`"),
+    }
+    Ok(())
+}
+
+fn play_file(path: &str) -> Result<()> {
+    use mosaic_audio::{Command, DeckId, Engine, Event, SourceSpec};
+
+    let engine = Engine::start()?;
+    engine.send(Command::Load {
+        deck: DeckId::A,
+        gen: 1,
+        source: SourceSpec::File(path.into()),
+        start_at: 0.0,
+        autoplay: true,
+        fade_in_ms: 0,
+        duration_hint: None,
+    });
+    let events = engine.events();
+    let mut last_print = -1.0;
+    for event in events.iter() {
+        match event {
+            Event::Position { secs, .. } if secs - last_print >= 1.0 => {
+                println!("position {secs:.1}s");
+                last_print = secs;
+            }
+            Event::Ended { .. } => break,
+            Event::Error { message, .. } => bail!(message),
+            Event::Ready { duration, .. } => println!("ready, duration {duration:?}"),
+            _ => {}
+        }
     }
     Ok(())
 }
