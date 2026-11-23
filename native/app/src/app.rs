@@ -1043,6 +1043,7 @@ impl App {
                 }
                 self.theme.tick(now);
                 self.viz_tick();
+                self.video_tick();
                 if self.ambient_prev.is_some() && self.anim.value("ambient", 1.0) >= 1.0 {
                     self.ambient_prev = None;
                 }
@@ -1316,6 +1317,7 @@ impl App {
             || !self.toasts.is_empty()
             || self.images.is_fading(self.now)
             || self.viz_active()
+            || self.video_active()
             || (self.player.track.is_some() && (self.player.playing || self.player.loading))
     }
 
@@ -1367,6 +1369,9 @@ impl App {
                     16.0,
                     p.surface,
                 ));
+            }
+            if let Some(layer) = self.video_layer(p) {
+                base = base.push(layer);
             }
             base.push(self.titlebar(p))
         };

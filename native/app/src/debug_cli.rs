@@ -51,6 +51,14 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             );
             println!("{}", p.url);
         }
+        "yt-video" => {
+            let v = services.yt_video_stream(arg(1)?).await?;
+            println!(
+                "{}x{} @{}fps\texpires in {}s",
+                v.width, v.height, v.fps, v.expires_in
+            );
+            println!("{}", v.url);
+        }
         "yt-watch" => {
             let hits = services.yt_search(arg(1)?).await?;
             let track = hits.first().context("no results")?;

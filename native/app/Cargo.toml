@@ -12,10 +12,10 @@ crossbeam-channel = "0.5.17"
 iced = { version = "0.14.0", features = ["tokio", "image", "canvas", "advanced"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 material-colors = { version = "0.5.0", features = ["quantize"] }
-mosaic-audio = { version = "0.6.0", path = "../crates/audio" }
-mosaic-core = { version = "0.6.0", path = "../crates/core" }
-mosaic-platform = { version = "0.6.0", path = "../crates/platform" }
-mosaic-services = { version = "0.6.0", path = "../crates/services", default-features = false }
+mosaic-audio = { version = "0.6.1", path = "../crates/audio" }
+mosaic-core = { version = "0.6.1", path = "../crates/core" }
+mosaic-platform = { version = "0.6.1", path = "../crates/platform" }
+mosaic-services = { version = "0.6.1", path = "../crates/services", default-features = false }
 rand = "0.10"
 rfd = "0.18.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

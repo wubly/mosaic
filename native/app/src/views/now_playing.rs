@@ -52,6 +52,7 @@ impl App {
         if self.ui.mini {
             self.normal_size = self.size;
             self.ui.now_playing = false;
+            self.ui.youtube.video = None;
             Task::batch([
                 iced::window::set_min_size(id, Some(MINI_MIN)),
                 iced::window::resize(id, MINI_SIZE),

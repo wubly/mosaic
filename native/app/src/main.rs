@@ -14,6 +14,7 @@ mod player;
 mod resolve;
 mod text_measure;
 mod theme;
+mod video;
 mod views;
 mod widgets;
 

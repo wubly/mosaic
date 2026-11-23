@@ -1,11 +1,12 @@
 //! The YouTube section: liked videos and playlists of the connected Google account. Searching
 //! lives in Discover, and playing a video needs no account (see `services::youtube::innertube`).
 
-use iced::widget::{column, container, row, text, Space};
-use iced::{Element, Length, Task};
+use iced::widget::{column, container, image, opaque, row, text, Space};
+use iced::{Alignment, Element, Length, Task};
 use mosaic_core::model::Track;
 use mosaic_services::youtube::api::{Library, PlaylistCard};
 use mosaic_services::youtube::auth::Status;
+use mosaic_services::youtube::innertube::VideoStream;
 use rand::seq::SliceRandom;
 
 use super::common::{
@@ -16,7 +17,9 @@ use super::track::{ListRef, TrackRef};
 use crate::app::{App, Message};
 use crate::player::PlayerInput;
 use crate::theme::{styles, Palette};
+use crate::video::Decoder;
 use crate::widgets::icon::Icon;
+use crate::widgets::spinner::spinner;
 
 #[derive(Clone, Debug)]
 pub enum Msg {
@@ -36,6 +39,24 @@ pub enum Msg {
     /// Find and open the video of a track (menu, player bar).
     Watch(Box<Track>),
     Watched(Box<Track>, Result<Option<String>, String>),
+    /// The picture-only stream of a video was resolved (or why not).
+    Stream(Box<Track>, String, Result<VideoStream, String>),
+    /// Close the in-app video.
+    CloseVideo,
+    /// Open the video being watched in the browser instead.
+    VideoInBrowser,
+}
+
+/// The video on screen. The sound is the engine's; this only draws the picture that goes with
+/// it (see `crate::video`).
+pub struct Video {
+    pub track: Track,
+    pub id: String,
+    pub stream: VideoStream,
+    pub decoder: Option<Decoder>,
+    pub frame: Option<iced::widget::image::Handle>,
+    /// The audio clock the picture was last matched to.
+    pub clock: f64,
 }
 
 /// A playlist on screen and its tracks once loaded (or why they didn't).
@@ -51,6 +72,7 @@ pub struct State {
     pub library: Library,
     pub library_loaded: bool,
     pub open: Option<OpenPlaylist>,
+    pub video: Option<Video>,
 }
 
 impl App {
@@ -244,7 +266,19 @@ impl App {
                 )
             }
             Msg::Watched(track, result) => match result {
-                Ok(Some(id)) => self.open_video(&track, &id),
+                Ok(Some(id)) => {
+                    let services = self.services.clone();
+                    Task::perform(
+                        async move {
+                            let stream = services
+                                .yt_video_stream(&id)
+                                .await
+                                .map_err(|e| e.to_string());
+                            (track, id, stream)
+                        },
+                        |(track, id, stream)| Message::Youtube(Msg::Stream(track, id, stream)),
+                    )
+                }
                 Ok(None) => {
                     self.toast("This song has no video on YouTube");
                     Task::none()
@@ -254,12 +288,192 @@ impl App {
                     Task::none()
                 }
             },
+            Msg::Stream(track, id, result) => match result {
+                Ok(stream) => self.show_video(*track, id, stream),
+                Err(e) => {
+                    self.toast(format!("{e}. Opening it in your browser instead"));
+                    self.open_video(&track, &id)
+                }
+            },
+            Msg::CloseVideo => {
+                self.ui.youtube.video = None;
+                Task::none()
+            }
+            Msg::VideoInBrowser => {
+                let Some(v) = self.ui.youtube.video.take() else {
+                    return Task::none();
+                };
+                self.open_video(&v.track, &v.id)
+            }
             Msg::EnqueueAll => {
                 let list = self.visible_youtube_tracks();
                 self.toast(format!("Added {} to the queue", songs(list.len() as u64)));
                 self.player_input(PlayerInput::EnqueueMany(list))
             }
         }
+    }
+
+    /// Shows a video inside the window, with the music playing along. A track that isn't the one
+    /// playing starts first; for the playing one the picture starts where the music is.
+    fn show_video(&mut self, track: Track, id: String, stream: VideoStream) -> Task<Message> {
+        let playing_it = self.player.track.as_ref().is_some_and(|t| t.id == track.id);
+        let clock = if playing_it {
+            self.display_position()
+        } else {
+            0.0
+        };
+        let decoder =
+            match Decoder::start(&stream.url, stream.width, stream.height, stream.fps, clock) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.toast(format!("{e}. Opening it in your browser instead"));
+                    return self.open_video(&track, &id);
+                }
+            };
+        let start = if playing_it {
+            Task::none()
+        } else {
+            self.player_input(PlayerInput::Play(track.clone(), None))
+        };
+        self.ui.youtube.video = Some(Video {
+            track,
+            id,
+            stream,
+            decoder: Some(decoder),
+            frame: None,
+            clock,
+        });
+        start
+    }
+
+    /// Whether the video view needs frames drawn: while the music moves, until the first
+    /// picture arrives, and after a seek while paused.
+    pub(crate) fn video_active(&self) -> bool {
+        self.ui.youtube.video.as_ref().is_some_and(|v| {
+            v.frame.is_none()
+                || self.player.playing
+                || self.player.loading
+                || (self.display_position() - v.clock).abs() > 0.05
+        })
+    }
+
+    /// Matches the picture to the audio clock. Run on every frame while the video is open.
+    pub(crate) fn video_tick(&mut self) {
+        let Some(v) = &self.ui.youtube.video else {
+            return;
+        };
+        if self.player.track.as_ref().map(|t| &t.id) != Some(&v.track.id) {
+            // The queue moved on; the picture belonged to the song that finished.
+            self.ui.youtube.video = None;
+            return;
+        }
+        let clock = self.display_position();
+        let Some(v) = self.ui.youtube.video.as_mut() else {
+            return;
+        };
+        v.clock = clock;
+        let Some(decoder) = v.decoder.as_mut() else {
+            return;
+        };
+        let poll = decoder.poll(clock);
+        if let Some(frame) = poll.frame {
+            v.frame = Some(frame);
+        }
+        if poll.restart {
+            v.decoder = Decoder::start(
+                &v.stream.url,
+                v.stream.width,
+                v.stream.height,
+                v.stream.fps,
+                clock,
+            )
+            .ok();
+            if v.decoder.is_none() {
+                self.ui.youtube.video = None;
+                self.toast("The video stopped");
+            }
+        }
+        if let Some(why) = poll.failed {
+            self.ui.youtube.video = None;
+            self.toast(why);
+        }
+    }
+
+    /// The mini video player: a small card above the player bar, at the right. Only the card
+    /// takes clicks; everything around it stays usable.
+    pub(crate) fn video_layer(&self, p: Palette) -> Option<Element<'_, Message>> {
+        let v = self.ui.youtube.video.as_ref()?;
+        let width = (self.size.width - 32.0).clamp(200.0, 400.0);
+        let height = width * v.stream.height as f32 / v.stream.width.max(1) as f32;
+        let picture: Element<'_, Message> = match &v.frame {
+            Some(frame) => image(frame.clone())
+                .content_fit(iced::ContentFit::Contain)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            None => spinner(
+                32.0,
+                self.now
+                    .saturating_duration_since(self.epoch)
+                    .as_secs_f32()
+                    .fract(),
+                crate::theme::alpha(iced::Color::WHITE, 0.7),
+            ),
+        };
+        let screen = container(picture)
+            .center(Length::Fill)
+            .width(Length::Fill)
+            .height(height)
+            .clip(true)
+            .style(styles::fill(iced::Color::BLACK, 12.0));
+        let footer = row![
+            column![
+                text(v.track.title.clone())
+                    .size(13)
+                    .color(p.on_surface)
+                    .wrapping(text::Wrapping::None),
+                text(v.track.artist.clone())
+                    .size(12)
+                    .color(p.on_surface_variant)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .width(Length::Fill)
+            .clip(true),
+            super::common::icon_button(
+                Icon::OpenInNew,
+                "Open on YouTube",
+                p,
+                Message::Youtube(Msg::VideoInBrowser)
+            ),
+            super::common::icon_button(
+                Icon::Close,
+                "Close video",
+                p,
+                Message::Youtube(Msg::CloseVideo)
+            ),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        let card = container(column![screen, footer].spacing(4))
+            .padding(8)
+            .width(width + 16.0)
+            .style(styles::popup(p, 16.0));
+        // Clear the player bar and its margins.
+        let bar = self.settings().bar_height as f32;
+        Some(
+            container(opaque(card))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 28.0,
+                    bottom: bar + 44.0,
+                    left: 0.0,
+                })
+                .into(),
+        )
     }
 
     /// Opens a video in the browser. When it is the video of what's playing it starts where

@@ -29,6 +29,19 @@ pub struct Playback {
     pub expires_in: u64,
 }
 
+/// A video-only format for the in-app video view (the sound comes from the engine).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoStream {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub expires_in: u64,
+}
+
+/// The largest height the in-app view decodes; it is drawn inside a window, not full screen.
+const MAX_VIDEO_HEIGHT: u64 = 720;
+
 fn context(visitor: &str) -> Value {
     json!({
         "client": {
@@ -98,6 +111,42 @@ pub fn pick_audio(response: &Value) -> Option<Playback> {
             })
         })
         .max_by_key(|p| (p.mime.starts_with("audio/webm"), p.bitrate))
+}
+
+/// The best video-only format up to 720p, H.264 first (every ffmpeg build decodes it, and it is
+/// the cheapest to decode), then whatever else is there.
+pub fn pick_video(response: &Value) -> Option<VideoStream> {
+    let expires_in = response["streamingData"]["expiresInSeconds"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| response["streamingData"]["expiresInSeconds"].as_u64())
+        .unwrap_or(0);
+    let formats = response["streamingData"]["adaptiveFormats"].as_array()?;
+    formats
+        .iter()
+        .filter_map(|f| {
+            let mime = f["mimeType"].as_str()?;
+            if !mime.starts_with("video/") {
+                return None;
+            }
+            let height = f["height"].as_u64()?;
+            let width = f["width"].as_u64()?;
+            if height == 0 || width == 0 || height > MAX_VIDEO_HEIGHT {
+                return None;
+            }
+            let h264 = mime.contains("avc1");
+            let fps = f["fps"].as_u64().unwrap_or(30).clamp(1, 120);
+            let stream = VideoStream {
+                url: f["url"].as_str()?.to_string(),
+                width: width as u32,
+                height: height as u32,
+                fps: fps as u32,
+                expires_in,
+            };
+            Some(((h264, height, f["bitrate"].as_u64().unwrap_or(0)), stream))
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map(|(_, stream)| stream)
 }
 
 /// Why `/player` won't give a stream for this video, as a message for the player bar.
@@ -307,9 +356,9 @@ impl Services {
         Ok(res.json().await?)
     }
 
-    /// Resolves a video to a fresh audio URL. Nothing is cached: a URL that stopped working is
-    /// re-resolved by the player, and an old one handed back would stop it again.
-    pub async fn yt_stream(&self, video_id: &str) -> Result<Playback> {
+    /// Asks `/player` for a video and keeps what `pick` finds, retrying once with a fresh visitor
+    /// id when YouTube answers with the bot check.
+    async fn yt_resolve<T>(&self, video_id: &str, pick: fn(&Value) -> Option<T>) -> Result<T> {
         if !valid_video_id(video_id) {
             bail!("YouTube: this isn't a valid video");
         }
@@ -317,14 +366,25 @@ impl Services {
         for attempt in 0..2 {
             let visitor = self.yt_visitor(attempt > 0).await?;
             json = self.yt_player(video_id, &visitor).await?;
-            if let Some(playback) = pick_audio(&json) {
-                return Ok(playback);
+            if let Some(found) = pick(&json) {
+                return Ok(found);
             }
             if !is_bot_check(&json) {
                 break;
             }
         }
         Err(anyhow!(refusal(&json)))
+    }
+
+    /// Resolves a video to a fresh audio URL. Nothing is cached: a URL that stopped working is
+    /// re-resolved by the player, and an old one handed back would stop it again.
+    pub async fn yt_stream(&self, video_id: &str) -> Result<Playback> {
+        self.yt_resolve(video_id, pick_audio).await
+    }
+
+    /// Resolves a video to a fresh picture-only URL for the in-app video view.
+    pub async fn yt_video_stream(&self, video_id: &str) -> Result<VideoStream> {
+        self.yt_resolve(video_id, pick_video).await
     }
 }
 
@@ -366,6 +426,23 @@ mod tests {
             .unwrap()
             .retain(|f| !f["mimeType"].as_str().unwrap().starts_with("audio/webm"));
         assert_eq!(pick_audio(&r).unwrap().url, "https://v/140");
+    }
+
+    #[test]
+    fn picks_the_tallest_h264_video_up_to_720p() {
+        let r = json!({"streamingData": {"expiresInSeconds": "100", "adaptiveFormats": [
+            {"mimeType": "video/mp4; codecs=\"avc1.640028\"", "width": 1920, "height": 1080, "fps": 30, "bitrate": 4_000_000, "url": "https://v/137"},
+            {"mimeType": "video/mp4; codecs=\"avc1.4d401f\"", "width": 1280, "height": 720, "fps": 30, "bitrate": 2_000_000, "url": "https://v/136"},
+            {"mimeType": "video/mp4; codecs=\"avc1.4d401e\"", "width": 854, "height": 480, "fps": 30, "bitrate": 1_000_000, "url": "https://v/135"},
+            {"mimeType": "video/webm; codecs=\"vp9\"", "width": 1280, "height": 720, "fps": 60, "bitrate": 3_000_000, "url": "https://v/302"},
+            {"mimeType": "audio/webm; codecs=\"opus\"", "bitrate": 136_544, "url": "https://v/251"},
+        ]}});
+        let v = pick_video(&r).expect("a format");
+        assert_eq!(v.url, "https://v/136");
+        assert_eq!((v.width, v.height, v.fps), (1280, 720, 30));
+        let only_big = json!({"streamingData": {"adaptiveFormats": [
+            {"mimeType": "video/mp4; codecs=\"avc1\"", "width": 1920, "height": 1080, "url": "https://v/137"}]}});
+        assert!(pick_video(&only_big).is_none());
     }
 
     #[test]
