@@ -93,16 +93,29 @@ pub fn slim_track(t: &Value) -> Option<Track> {
 }
 
 pub fn playable(list: Option<&Value>) -> Vec<Track> {
-    list.and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|t| {
-            t["id"].as_u64().is_some_and(|id| id != 0)
-                && t["title"].as_str().is_some_and(|s| !s.is_empty())
-        })
-        .filter_map(slim_track)
-        .filter(|t| t.streamable)
-        .collect()
+    playable_with_signals(list).0
+}
+
+/// `playable`, plus how many plays each track has and whether its uploader is verified, for
+/// ranking search results.
+pub fn playable_with_signals(list: Option<&Value>) -> (Vec<Track>, Vec<u64>, Vec<bool>) {
+    let mut tracks = Vec::new();
+    let mut plays = Vec::new();
+    let mut verified = Vec::new();
+    for t in list.and_then(Value::as_array).into_iter().flatten() {
+        if !(t["id"].as_u64().is_some_and(|id| id != 0)
+            && t["title"].as_str().is_some_and(|s| !s.is_empty()))
+        {
+            continue;
+        }
+        let Some(track) = slim_track(t).filter(|t| t.streamable) else {
+            continue;
+        };
+        tracks.push(track);
+        plays.push(t["playback_count"].as_u64().unwrap_or(0));
+        verified.push(t["user"]["verified"].as_bool().unwrap_or(false));
+    }
+    (tracks, plays, verified)
 }
 
 #[cfg(test)]

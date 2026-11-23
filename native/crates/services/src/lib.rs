@@ -4,6 +4,7 @@ pub mod images;
 pub mod local;
 pub mod lyrics;
 pub mod oauth;
+pub mod ranking;
 pub mod soundcloud;
 pub mod spotify;
 pub mod update;

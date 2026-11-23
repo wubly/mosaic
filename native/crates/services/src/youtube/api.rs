@@ -133,6 +133,8 @@ fn slim_all(json: &Value) -> Vec<Track> {
         .collect()
 }
 
+const SEARCH_LIMIT: usize = 30;
+
 impl Services {
     /// GET against the Data API with the signed-in account.
     pub(crate) async fn yt_api(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
@@ -183,11 +185,14 @@ impl Services {
     /// Searches YouTube Music for songs, falling back to the website's video search if the
     /// music endpoint fails. Signed in or not, it doesn't touch the Data API quota.
     pub async fn yt_search(&self, query: &str) -> Result<Vec<Track>> {
+        use crate::ranking::refine;
         match self.yt_search_music(query).await {
-            Ok(tracks) => Ok(tracks),
+            // YouTube Music's own order is good; this only tidies and de-duplicates it.
+            Ok(tracks) => Ok(refine(query, tracks, &[], &[], 3.0, SEARCH_LIMIT)),
             Err(e) => {
                 tracing::warn!("YouTube Music search failed, using website search: {e}");
-                self.yt_search_public(query).await
+                let tracks = self.yt_search_public(query).await?;
+                Ok(refine(query, tracks, &[], &[], 1.0, SEARCH_LIMIT))
             }
         }
     }

@@ -2,20 +2,34 @@ use anyhow::{bail, Result};
 use mosaic_core::model::{Track, TrackId};
 
 use super::client_types::{StreamInfo, StreamKind};
-use super::tracks::{full_streams, playable};
+use super::tracks::{full_streams, playable, playable_with_signals};
 use crate::Services;
 
 const API: &str = "https://api-v2.soundcloud.com";
 
 impl Services {
+    /// Songs matching `query`, ranked like a music service would: SoundCloud's own order is
+    /// raw (mixes, snippets, five uploads of one song), so a wider page is fetched and
+    /// `ranking` picks the best `limit` of it.
     pub async fn sc_search(&self, query: &str, limit: u32) -> Result<Vec<Track>> {
         let json = self
             .sc_get(
                 &format!("{API}/search/tracks"),
-                &[("q", query.into()), ("limit", limit.to_string())],
+                &[
+                    ("q", query.into()),
+                    ("limit", (limit * 2).clamp(limit, 100).to_string()),
+                ],
             )
             .await?;
-        Ok(playable(json.get("collection")))
+        let (tracks, plays, verified) = playable_with_signals(json.get("collection"));
+        Ok(crate::ranking::refine(
+            query,
+            tracks,
+            &plays,
+            &verified,
+            1.5,
+            limit as usize,
+        ))
     }
 
     pub async fn sc_charts(&self, genre: &str, limit: u32) -> Result<Vec<Track>> {
