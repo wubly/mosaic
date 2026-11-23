@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "mosaic"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "ash",
@@ -3875,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "mosaic-audio"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3897,7 +3897,7 @@ dependencies = [
 
 [[package]]
 name = "mosaic-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "directories",
@@ -3913,7 +3913,7 @@ dependencies = [
 
 [[package]]
 name = "mosaic-platform"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "interprocess",
  "ksni",
@@ -3924,7 +3924,7 @@ dependencies = [
 
 [[package]]
 name = "mosaic-services"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
