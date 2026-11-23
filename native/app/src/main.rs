@@ -95,8 +95,6 @@ fn main() -> anyhow::Result<()> {
     // when the main window has opened (`Message::PlatformReady`).
     #[cfg(target_os = "linux")]
     let (media, tray) = (start_media(None), start_tray());
-    #[cfg(not(target_os = "linux"))]
-    let (media, tray) = (None, None);
     if let Ok(mut flags) = FLAGS.lock() {
         *flags = Some(Flags {
             dirs,
@@ -104,7 +102,9 @@ fn main() -> anyhow::Result<()> {
             services,
             engine,
             engine_error,
+            #[cfg(target_os = "linux")]
             media,
+            #[cfg(target_os = "linux")]
             tray,
             migrated: migrated.is_some(),
             reset_window: args.reset_window,

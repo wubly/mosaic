@@ -45,7 +45,11 @@ pub struct Flags {
     pub services: Services,
     pub engine: Option<Engine>,
     pub engine_error: Option<String>,
+    /// Created before the event loop on Linux only. Elsewhere the handles aren't `Send` (this
+    /// struct sits in a static) and are made on the main thread once the window is up.
+    #[cfg(target_os = "linux")]
     pub media: Option<mosaic_platform::media_controls::Media>,
+    #[cfg(target_os = "linux")]
     pub tray: Option<mosaic_platform::tray::Tray>,
     pub files: Vec<std::path::PathBuf>,
     pub migrated: bool,
@@ -208,7 +212,7 @@ pub struct App {
 fn native_hwnd(w: &dyn window::Window) -> Option<isize> {
     #[cfg(windows)]
     {
-        use window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use window::raw_window_handle::RawWindowHandle;
         match w.window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
             _ => None,
@@ -232,6 +236,13 @@ impl App {
             .ok()
             .and_then(|mut f| f.take())
             .expect("flags are set before the daemon starts");
+        #[cfg(target_os = "linux")]
+        let (media, tray) = (flags.media, flags.tray);
+        #[cfg(not(target_os = "linux"))]
+        let (media, tray): (
+            Option<mosaic_platform::media_controls::Media>,
+            Option<mosaic_platform::tray::Tray>,
+        ) = (None, None);
         let (main, open) = window::open(window_settings());
         let decorations = decorations_enabled();
         let now = Instant::now();
@@ -261,9 +272,9 @@ impl App {
             ambient: None,
             ambient_prev: None,
             art_src: String::new(),
-            media: flags.media,
-            tray_available: flags.tray.is_some(),
-            tray: flags.tray,
+            media,
+            tray_available: tray.is_some(),
+            tray,
             media_track: None,
             discord: mosaic_services::discord::Discord::spawn(),
             local: Vec::new(),

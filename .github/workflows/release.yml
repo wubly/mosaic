@@ -57,8 +57,15 @@ jobs:
       - name: Collect
         run: |
           mkdir -p ../dist
-          cp target/release/packager/*.AppImage "../dist/Mosaic-$VERSION-x86_64.AppImage"
-          cp target/release/packager/*.deb "../dist/mosaic_${VERSION}_amd64.deb"
+          # cargo-packager's output directory differs between versions and targets, so look for it.
+          pick() {
+            local f
+            f=$(find target -name "$1" -not -path '*/deps/*' -not -path '*/build/*' -not -path '*/.fingerprint/*' | head -n1)
+            [[ -n "$f" ]] || { echo "::error::no $1 under target/"; find target -maxdepth 4 -newer Cargo.toml -type f | head -50; exit 1; }
+            echo "$f"
+          }
+          cp "$(pick '*.AppImage')" "../dist/Mosaic-$VERSION-x86_64.AppImage"
+          cp "$(pick '*.deb')" "../dist/mosaic_${VERSION}_amd64.deb"
           stage="mosaic-$VERSION-linux-x86_64"
           mkdir "$stage"
           cp target/release/mosaic "$stage/"
@@ -87,7 +94,14 @@ jobs:
       - name: Collect
         run: |
           mkdir -p ../dist
-          cp target/release/packager/*-setup.exe "../dist/Mosaic-$VERSION-windows-x64-setup.exe"
+          # cargo-packager's output directory differs between versions and targets, so look for it.
+          pick() {
+            local f
+            f=$(find target -name "$1" -not -path '*/deps/*' -not -path '*/build/*' -not -path '*/.fingerprint/*' | head -n1)
+            [[ -n "$f" ]] || { echo "::error::no $1 under target/"; find target -maxdepth 4 -newer Cargo.toml -type f | head -50; exit 1; }
+            echo "$f"
+          }
+          cp "$(pick '*-setup.exe')" "../dist/Mosaic-$VERSION-windows-x64-setup.exe"
           # Portable build: the bare executable, no installer.
           cp target/release/mosaic.exe "../dist/Mosaic-$VERSION-windows-x64-portable.exe"
       - uses: actions/upload-artifact@v4
@@ -142,11 +156,21 @@ jobs:
           fi
           cargo packager --release -p mosaic --target universal-apple-darwin -f app,dmg
       - name: Check the signature
-        run: codesign --verify --deep --strict --verbose=2 target/universal-apple-darwin/release/packager/*.app
+        run: |
+          app=$(find target/universal-apple-darwin -name '*.app' -type d -not -path '*/deps/*' | head -n1)
+          [[ -n "$app" ]] || { echo "::error::no .app bundle was built"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
       - name: Collect
         run: |
           mkdir -p ../dist
-          cp target/universal-apple-darwin/release/packager/*.dmg "../dist/Mosaic-$VERSION-macos-universal.dmg"
+          # cargo-packager's output directory differs between versions and targets, so look for it.
+          pick() {
+            local f
+            f=$(find target -name "$1" -not -path '*/deps/*' -not -path '*/build/*' -not -path '*/.fingerprint/*' | head -n1)
+            [[ -n "$f" ]] || { echo "::error::no $1 under target/"; find target -maxdepth 4 -newer Cargo.toml -type f | head -50; exit 1; }
+            echo "$f"
+          }
+          cp "$(pick '*.dmg')" "../dist/Mosaic-$VERSION-macos-universal.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
