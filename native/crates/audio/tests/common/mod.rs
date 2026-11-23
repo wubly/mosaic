@@ -81,6 +81,24 @@ impl Rig {
         }
     }
 
+    /// Like `wait_for`, but keeps the offline output running while it waits. The decoder only
+    /// moves on as audio is consumed, so waiting without rendering can wait forever once its
+    /// buffer is full.
+    pub fn wait_for_rendering(&mut self, what: &str, pred: impl Fn(&Event) -> bool) -> Event {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(i) = self.seen.iter().position(&pred) {
+                return self.seen.remove(i);
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timed out waiting for {what}; saw {:?}", self.seen);
+            }
+            self.render_secs(0.1);
+            self.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     pub fn drain(&mut self) {
         self.engine.sync();
         while let Ok(e) = self.engine.events().try_recv() {

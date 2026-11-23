@@ -233,8 +233,8 @@ fn hls_expired_segment_reports_expiry() {
         0.0,
     );
     rig.wait_for("ready", |e| matches!(e, Event::Ready { .. }));
-    rig.render_secs(0.8);
-    let Event::Error { message, .. } = rig.wait_for("error", |e| matches!(e, Event::Error { .. }))
+    let Event::Error { message, .. } =
+        rig.wait_for_rendering("error", |e| matches!(e, Event::Error { .. }))
     else {
         unreachable!()
     };
