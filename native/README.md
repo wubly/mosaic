@@ -46,7 +46,7 @@ cargo build --no-default-features # without librespot
 Bump `version` in `[workspace.package]` (`Cargo.toml`), commit, then push a matching tag:
 
 ```sh
-git tag v0.5.0 && git push origin v0.5.0
+git tag v0.6.0 && git push origin v0.6.0
 ```
 
 `.github/workflows/release.yml` builds the Linux AppImage, `.deb` and tarball (on Ubuntu 22.04 for glibc reach), the
