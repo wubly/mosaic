@@ -49,11 +49,11 @@ fn request(
     url: &str,
     from: u64,
 ) -> Result<(Head, Box<dyn Read + Send>), String> {
-    let mut req = agent.get(url);
-    if from > 0 {
-        req = req.header("Range", format!("bytes={from}-"));
-    }
-    let resp = req
+    // Always ranged, even from 0: YouTube serves an unranged GET at a throttled crawl, slower
+    // than the audio plays. Servers that ignore Range answer 200 and are handled below.
+    let resp = agent
+        .get(url)
+        .header("Range", format!("bytes={from}-"))
         .call()
         .map_err(|e| format!("Could not reach the stream: {e}"))?;
     let status = resp.status().as_u16();

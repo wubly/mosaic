@@ -32,7 +32,8 @@ const PAUSE_FADE_MS: u32 = 250;
 const RESUME_FADE_MS: u32 = 300;
 const PREV_RESTARTS_AFTER: f64 = 3.0;
 
-pub const UNAVAILABLE_YOUTUBE: &str = "Not available in this version";
+pub const UNAVAILABLE_YOUTUBE: &str = "Turn on YouTube in Settings → Beta";
+pub const UNAVAILABLE_SOURCE: &str = "Not available in this version";
 pub const UNAVAILABLE_SPOTIFY: &str = "Connect Spotify in Settings → Beta";
 
 /// What the service layer resolved for a track.
@@ -142,6 +143,7 @@ pub enum PlayerInput {
     Tick,
     SettingsChanged(Settings),
     SpotifyAvailable(bool),
+    YoutubeAvailable(bool),
     Restore(Session),
     /// Spotify moved on from the track with URI `from` to `track` by itself.
     AdoptSpotify {
@@ -192,6 +194,7 @@ pub struct PlayerController {
     pub active: DeckId,
     pub settings: Settings,
     spotify_available: bool,
+    youtube_available: bool,
 
     gen: u64,
     opts: LoadOpts,
@@ -231,6 +234,7 @@ impl PlayerController {
             active: DeckId::A,
             settings,
             spotify_available: false,
+            youtube_available: false,
             gen: 0,
             opts: LoadOpts::default(),
             loaded: false,
@@ -285,7 +289,8 @@ impl PlayerController {
     /// Why this track can't be played here, if it can't.
     pub fn unavailable(&self, track: &Track) -> Option<&'static str> {
         match track.source {
-            Source::YouTube | Source::Other(_) => Some(UNAVAILABLE_YOUTUBE),
+            Source::YouTube if !self.youtube_available => Some(UNAVAILABLE_YOUTUBE),
+            Source::Other(_) => Some(UNAVAILABLE_SOURCE),
             Source::Spotify if !self.spotify_available => Some(UNAVAILABLE_SPOTIFY),
             _ => None,
         }
@@ -355,6 +360,7 @@ impl PlayerController {
             PlayerInput::Tick => self.tick(now, fx),
             PlayerInput::SettingsChanged(s) => self.on_settings(s, fx),
             PlayerInput::SpotifyAvailable(on) => self.spotify_available = on,
+            PlayerInput::YoutubeAvailable(on) => self.youtube_available = on,
             PlayerInput::Restore(session) => self.restore(session),
             PlayerInput::AdoptSpotify { from, track } => self.adopt_spotify(&from, track, now, fx),
             PlayerInput::SpotifyUpNext { playing, tracks } => {
@@ -601,6 +607,8 @@ impl PlayerController {
     }
 
     fn on_error(&mut self, message: &str, now: Instant, fx: &mut Vec<Effect>) {
+        // The bar only says "Playback failed"; the log keeps the engine's reason.
+        tracing::warn!("engine error: {message}");
         if message == "stream expired" && !self.retried {
             if let Some(track) = self.track.clone() {
                 let opts = LoadOpts {
@@ -611,7 +619,10 @@ impl PlayerController {
                 return self.load(&track, opts, true, now, fx);
             }
         }
-        self.error = if message.contains("ffmpeg") || message.contains("Spotify") {
+        self.error = if message.contains("ffmpeg")
+            || message.contains("Spotify")
+            || message.contains("YouTube")
+        {
             message.to_string()
         } else {
             "Playback failed".into()
@@ -763,7 +774,7 @@ impl PlayerController {
             && !self.fetching_more
             && seed
                 .as_ref()
-                .is_some_and(|t| t.source == Source::SoundCloud);
+                .is_some_and(|t| matches!(t.source, Source::SoundCloud | Source::YouTube));
         if let (true, Some(seed)) = (can_continue, seed) {
             self.fetching_more = true;
             fx.push(Effect::FetchRelated {

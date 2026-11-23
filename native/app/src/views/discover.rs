@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+};
 use iced::{Alignment, Element, Length, Task};
 use mosaic_core::model::Track;
 use mosaic_core::relevance::filter_along;
@@ -27,13 +29,42 @@ pub const GENRES: [(&str, &str); 7] = [
 pub const SEARCH_ID: &str = "discover-search";
 const DEBOUNCE: Duration = Duration::from_millis(400);
 
+/// Where Discover's search looks. One service at a time, picked from the dropdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SearchService {
+    #[default]
+    SoundCloud,
+    Spotify,
+    YouTube,
+    Device,
+}
+
+impl SearchService {
+    fn label(self) -> &'static str {
+        match self {
+            SearchService::SoundCloud => "SoundCloud",
+            SearchService::Spotify => "Spotify",
+            SearchService::YouTube => "YouTube",
+            SearchService::Device => "This device",
+        }
+    }
+}
+
+impl std::fmt::Display for SearchService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Msg {
+    Service(SearchService),
     Query(String),
     Debounced(u64),
     Submit,
     Clear,
     Results(u64, Result<Vec<Track>, String>),
+    YoutubeResults(u64, Result<Vec<Track>, String>),
     Genre(&'static str),
     Charts(&'static str, Result<Vec<Track>, String>),
     More(String, Result<Vec<Track>, String>),
@@ -41,9 +72,11 @@ pub enum Msg {
 
 pub struct State {
     pub query: String,
+    pub service: SearchService,
     pub results: Vec<Track>,
+    pub youtube: Vec<Track>,
     pub busy: bool,
-    /// The Spotify half of a search is still out.
+    /// The Spotify search is still out.
     pub sp_busy: bool,
     pub error: String,
     pub seq: u64,
@@ -60,7 +93,9 @@ impl Default for State {
     fn default() -> Self {
         State {
             query: String::new(),
+            service: SearchService::default(),
             results: Vec::new(),
+            youtube: Vec::new(),
             busy: false,
             sp_busy: false,
             error: String::new(),
@@ -143,10 +178,7 @@ impl App {
                     self.ui.discover.busy = true;
                     self.ui.discover.error.clear();
                 } else if trimmed.is_empty() {
-                    self.ui.discover.results.clear();
-                    self.ui.spotify.search = Default::default();
-                    self.ui.discover.busy = false;
-                    self.ui.discover.sp_busy = false;
+                    self.clear_search_results();
                     return Task::none();
                 }
                 Task::perform(tokio::time::sleep(DEBOUNCE), move |()| {
@@ -169,12 +201,30 @@ impl App {
             }
             Msg::Clear => {
                 self.ui.discover.query.clear();
-                self.ui.discover.results.clear();
-                self.ui.spotify.search = Default::default();
-                self.ui.discover.busy = false;
-                self.ui.discover.sp_busy = false;
+                self.clear_search_results();
                 self.ui.discover.seq += 1;
                 iced::widget::operation::focus(SEARCH_ID)
+            }
+            Msg::Service(service) => {
+                self.ui.discover.service = service;
+                self.ui.discover.seq += 1;
+                self.ui.discover.error.clear();
+                if self.ui.discover.query.trim().chars().count() > 1 {
+                    return self.run_search();
+                }
+                self.clear_search_results();
+                Task::none()
+            }
+            Msg::YoutubeResults(seq, result) => {
+                if seq != self.ui.discover.seq {
+                    return Task::none();
+                }
+                self.ui.discover.busy = false;
+                match result {
+                    Ok(list) => self.ui.discover.youtube = filter_along(list, None),
+                    Err(e) => self.ui.discover.error = e,
+                }
+                Task::none()
             }
             Msg::Results(seq, result) => {
                 if seq != self.ui.discover.seq {
@@ -211,32 +261,70 @@ impl App {
         }
     }
 
-    /// Search hits from every provider, interleaved so neither buries the other. Both halves
-    /// arrive on their own, so this grows as they land.
-    pub(crate) fn search_tracks(&self) -> Vec<Track> {
-        let sc = &self.ui.discover.results;
-        let sp = &self.ui.spotify.search.tracks;
-        let mut out = Vec::with_capacity(sc.len() + sp.len());
-        for i in 0..sc.len().max(sp.len()) {
-            out.extend(sp.get(i).cloned());
-            out.extend(sc.get(i).cloned());
+    /// The services a search can use right now. SoundCloud and the device are always there;
+    /// YouTube needs the beta but not an account.
+    pub(crate) fn search_services(&self) -> Vec<SearchService> {
+        let mut list = vec![SearchService::SoundCloud];
+        if self.spotify_enabled() {
+            list.push(SearchService::Spotify);
         }
-        out
+        if self.youtube_playable() {
+            list.push(SearchService::YouTube);
+        }
+        list.push(SearchService::Device);
+        list
+    }
+
+    /// The picked service, or SoundCloud if the pick is gone (disconnected, beta turned off).
+    pub(crate) fn search_service(&self) -> SearchService {
+        let picked = self.ui.discover.service;
+        if self.search_services().contains(&picked) {
+            picked
+        } else {
+            SearchService::SoundCloud
+        }
+    }
+
+    fn clear_search_results(&mut self) {
+        let d = &mut self.ui.discover;
+        d.results.clear();
+        d.youtube.clear();
+        d.busy = false;
+        d.sp_busy = false;
+        self.ui.spotify.search = Default::default();
+    }
+
+    /// Song hits of the picked service.
+    pub(crate) fn search_tracks(&self) -> Vec<Track> {
+        match self.search_service() {
+            SearchService::SoundCloud => self.ui.discover.results.clone(),
+            SearchService::Spotify => self.ui.spotify.search.tracks.clone(),
+            SearchService::YouTube => self.ui.discover.youtube.clone(),
+            SearchService::Device => self.local_hits(60),
+        }
     }
 
     fn run_search(&mut self) -> Task<Message> {
         let q = self.ui.discover.query.trim().to_string();
         let seq = self.ui.discover.seq;
-        self.ui.discover.busy = true;
+        let service = self.search_service();
         self.ui.discover.error.clear();
-        self.ui.discover.sp_busy = self.spotify_enabled();
+        self.ui.discover.busy =
+            matches!(service, SearchService::SoundCloud | SearchService::YouTube);
+        self.ui.discover.sp_busy = service == SearchService::Spotify;
         let services = self.services.clone();
-        let spotify = self.search_spotify(q.clone(), seq);
-        let sc = Task::perform(
-            async move { services.sc_search(&q, 30).await.map_err(|e| e.to_string()) },
-            move |r| Message::Discover(Msg::Results(seq, r)),
-        );
-        Task::batch([sc, spotify])
+        match service {
+            SearchService::SoundCloud => Task::perform(
+                async move { services.sc_search(&q, 30).await.map_err(|e| e.to_string()) },
+                move |r| Message::Discover(Msg::Results(seq, r)),
+            ),
+            SearchService::Spotify => self.search_spotify(q, seq),
+            SearchService::YouTube => Task::perform(
+                async move { services.yt_search(&q).await.map_err(|e| e.to_string()) },
+                move |r| Message::Discover(Msg::YoutubeResults(seq, r)),
+            ),
+            SearchService::Device => Task::none(),
+        }
     }
 
     /// Opens Discover with a search term (command palette, `/`).
@@ -366,9 +454,56 @@ impl App {
         )
         .padding([0, 20])
         .height(56)
-        .max_width(640)
+        .max_width(520)
         .center_y(56)
         .style(styles::fill(p.surface_container_high, 28.0))
+        .into()
+    }
+
+    /// The search bar with the service picker beside it, or under it when the page is narrow.
+    fn search_row(&self, p: Palette) -> Element<'_, Message> {
+        if self.main_width() < 680.0 {
+            column![self.search_bar(p), self.service_picker(p)]
+                .spacing(12)
+                .into()
+        } else {
+            row![self.search_bar(p), self.service_picker(p)]
+                .spacing(12)
+                .align_y(Alignment::Center)
+                .into()
+        }
+    }
+
+    fn service_picker(&self, p: Palette) -> Element<'_, Message> {
+        let options = self.search_services();
+        pick_list(options, Some(self.search_service()), |s| {
+            Message::Discover(Msg::Service(s))
+        })
+        .text_size(14)
+        .padding([10, 16])
+        .style(move |_, status| {
+            let open = matches!(status, pick_list::Status::Opened { .. });
+            pick_list::Style {
+                text_color: p.on_surface,
+                placeholder_color: p.on_surface_variant,
+                handle_color: p.on_surface_variant,
+                background: if open {
+                    p.surface_container_highest
+                } else {
+                    p.surface_container_high
+                }
+                .into(),
+                border: iced::border::rounded(28),
+            }
+        })
+        .menu_style(move |_| iced::overlay::menu::Style {
+            background: p.surface_container_highest.into(),
+            border: iced::border::rounded(16),
+            text_color: p.on_surface,
+            selected_text_color: p.on_primary_container,
+            selected_background: p.primary_container.into(),
+            shadow: iced::Shadow::default(),
+        })
         .into()
     }
 
@@ -393,60 +528,37 @@ impl App {
                 .align_y(Alignment::Center),
             text(title).size(28),
             Space::new().height(24),
-            self.search_bar(p),
+            self.search_row(p),
         ]
         .spacing(4);
 
         if !d.query.trim().is_empty() {
-            let device = self.device_hits();
-            if !device.is_empty() {
-                body = body.push(h3("On your device".into()));
-                for (i, t) in device.iter().enumerate() {
-                    body = body.push(self.track_row(
-                        t,
-                        i,
-                        TrackRef {
-                            list: ListRef::Device,
-                            index: i,
-                        },
-                        false,
-                        p,
-                    ));
-                }
-            }
+            let service = self.search_service();
             let sp = &self.ui.spotify.search;
-            if !sp.artists.is_empty() {
+            let on_spotify = service == SearchService::Spotify;
+            if on_spotify && !sp.artists.is_empty() {
                 body = body
                     .push(h3("Spotify artists (beta)".into()))
                     .push(self.artist_cards(&sp.artists, p));
             }
-            if !sp.albums.is_empty() {
+            if on_spotify && !sp.albums.is_empty() {
                 body = body
                     .push(h3("Spotify albums".into()))
                     .push(self.album_cards(&sp.albums, p));
             }
-            if !sp.playlists.is_empty() {
+            if on_spotify && !sp.playlists.is_empty() {
                 body = body
                     .push(h3("Spotify playlists".into()))
                     .push(self.playlist_cards(&sp.playlists, None, p));
             }
-            let providers = if self.spotify_enabled() {
-                "SoundCloud and Spotify"
-            } else {
-                "SoundCloud"
-            };
-            let waiting: Vec<&str> = [(d.busy, "SoundCloud"), (d.sp_busy, "Spotify")]
-                .into_iter()
-                .filter_map(|(busy, name)| busy.then_some(name))
-                .collect();
             body = body.push(
                 row![
                     h3(format!("Songs for “{}”", d.query.trim())),
                     Space::new().width(Length::Fill),
-                    text(if waiting.is_empty() {
-                        format!("From {providers}")
+                    text(if d.busy || d.sp_busy {
+                        format!("Searching {service}…")
                     } else {
-                        format!("Searching {}…", waiting.join(" and "))
+                        format!("From {service}")
                     })
                     .size(12)
                     .color(p.on_surface_variant),

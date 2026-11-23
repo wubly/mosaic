@@ -37,6 +37,18 @@ pub async fn resolve_stream(
                 silence: info.silence,
             })
         }
+        Source::YouTube => {
+            let id = track
+                .video_id
+                .clone()
+                .or_else(|| track.id.key().strip_prefix("yt:").map(str::to_string))
+                .ok_or("Could not play this track")?;
+            let playback = services.yt_stream(&id).await.map_err(|e| e.to_string())?;
+            Ok(Stream {
+                source: SourceSpec::Http { url: playback.url },
+                silence: None,
+            })
+        }
         #[cfg(feature = "spotify")]
         Source::Spotify => spotify(services, track, seek_to).await,
         _ => Err("Could not play this track".into()),

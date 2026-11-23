@@ -67,6 +67,7 @@ pub enum Message {
     Onboarding(crate::views::onboarding::Msg),
     UpdateTimer,
     Spotify(crate::views::spotify::Msg),
+    Youtube(crate::views::youtube::Msg),
     Import(crate::views::import::Msg),
     Lyrics(crate::views::lyrics::Msg),
     CloseNowPlaying,
@@ -149,6 +150,7 @@ pub(crate) struct Ui {
     pub(crate) onboarding: Option<crate::views::onboarding::State>,
     pub(crate) hidden: bool,
     pub(crate) spotify: crate::views::spotify::State,
+    pub(crate) youtube: crate::views::youtube::State,
     pub(crate) import: crate::views::import::State,
     pub(crate) lyrics: crate::views::lyrics::State,
     pub(crate) library: crate::views::library::State,
@@ -322,6 +324,7 @@ impl App {
             app.discover_boot(),
             app.scan(),
             app.spotify_boot(),
+            app.youtube_boot(),
             Task::perform(tokio::time::sleep(Duration::from_secs(5)), |()| {
                 Message::UpdateTimer
             }),
@@ -385,7 +388,12 @@ impl App {
     }
 
     pub(crate) fn retarget_rail(&mut self) {
-        let y = rail::pill_y(self.rail_view(), self.spotify_enabled(), self.rail_height());
+        let y = rail::pill_y(
+            self.rail_view(),
+            self.spotify_enabled(),
+            self.youtube_enabled(),
+            self.rail_height(),
+        );
         self.anim.spring("rail-pill", y, 500.0, 36.0);
     }
 
@@ -414,6 +422,7 @@ impl App {
         self.page_transition();
         match view {
             View::Spotify => self.spotify_ensure_loaded(),
+            View::YouTube => self.youtube_ensure_loaded(),
             View::Queue => self.on_spotify(crate::views::spotify::Msg::PollQueue),
             _ => Task::none(),
         }
@@ -612,10 +621,14 @@ impl App {
                     };
                     tasks.push(Task::perform(
                         async move {
-                            let result = services
-                                .sc_related(&seed.id, limit)
-                                .await
-                                .map_err(|e| e.to_string());
+                            let result = match seed.source {
+                                mosaic_core::model::Source::YouTube => services
+                                    .yt_related(seed.video_id.as_deref().unwrap_or_default())
+                                    .await
+                                    .map(|list| list.into_iter().take(limit as usize).collect()),
+                                _ => services.sc_related(&seed.id, limit).await,
+                            }
+                            .map_err(|e| e.to_string());
                             (seed, result)
                         },
                         move |(seed, result)| {
@@ -869,6 +882,7 @@ impl App {
             Message::External(External::Tray(action)) => self.on_tray(action),
             Message::External(External::Instance(line)) => self.on_instance(&line),
             Message::Spotify(msg) => self.on_spotify(msg),
+            Message::Youtube(msg) => self.on_youtube(msg),
             Message::Import(msg) => self.on_import(msg),
             Message::Lyrics(msg) => self.on_lyrics(msg),
             Message::CloseNowPlaying => {
@@ -978,7 +992,12 @@ impl App {
                 // Fade-through: the current page fades out, then the new one eases in. The rail
                 // pill heads for the new item straight away.
                 self.ui.nav = Some(view);
-                let y = rail::pill_y(view, self.spotify_enabled(), self.rail_height());
+                let y = rail::pill_y(
+                    view,
+                    self.spotify_enabled(),
+                    self.youtube_enabled(),
+                    self.rail_height(),
+                );
                 self.anim.spring("rail-pill", y, 500.0, 36.0);
                 let now = Instant::now();
                 self.anim.tween(
@@ -1542,6 +1561,7 @@ impl App {
             self.rail_view(),
             self.player.queue.list.len(),
             self.spotify_enabled(),
+            self.youtube_enabled(),
             self.anim.value("rail-pill", 0.0),
             p,
             Message::Nav,
@@ -1552,6 +1572,7 @@ impl App {
             View::Local => self.local_view(p),
             View::Queue => self.queue_view(p),
             View::Spotify => self.spotify_view(p),
+            View::YouTube => self.youtube_view(p),
             View::Settings => self.settings_view(p),
         };
         let t = self.anim.value("page", 1.0).clamp(0.0, 1.0);

@@ -154,7 +154,7 @@ pub fn total_length(tracks: &[Track]) -> String {
     }
 }
 
-fn songs(n: u64) -> String {
+pub fn songs(n: u64) -> String {
     if n == 1 {
         "1 song".into()
     } else {
@@ -757,7 +757,7 @@ impl App {
         }
     }
 
-    fn card<'a>(
+    pub(crate) fn card<'a>(
         &'a self,
         image: &str,
         title: String,
@@ -797,7 +797,7 @@ impl App {
         .into()
     }
 
-    fn shelf_row<'a>(
+    pub(crate) fn shelf_row<'a>(
         cards: impl Iterator<Item = Element<'a, Message>>,
         p: Palette,
     ) -> Element<'a, Message> {

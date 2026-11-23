@@ -321,6 +321,10 @@ pub struct Config {
     pub beta: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spotify_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub youtube_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub youtube_client_secret: Option<String>,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -338,6 +342,8 @@ impl Config {
             genius: (self.genius == Some(true)).then_some(true),
             beta: (self.beta == Some(true)).then_some(true),
             spotify_client_id: self.spotify_client_id.clone().filter(|s| !s.is_empty()),
+            youtube_client_id: self.youtube_client_id.clone().filter(|s| !s.is_empty()),
+            youtube_client_secret: self.youtube_client_secret.clone().filter(|s| !s.is_empty()),
             ..Config::default()
         }
     }

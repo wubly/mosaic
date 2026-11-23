@@ -14,6 +14,7 @@ pub mod settings;
 pub mod spotify;
 pub mod track;
 pub mod tune;
+pub mod youtube;
 
 use iced::widget::{container, image, Space};
 use iced::{ContentFit, Element, Length};

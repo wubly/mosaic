@@ -19,7 +19,6 @@ pub enum ListRef {
     Charts,
     More,
     Recent,
-    Device,
     Queue,
     Likes,
     History,
@@ -30,6 +29,8 @@ pub enum ListRef {
     SpotifyShelf(super::spotify::Shelf),
     /// Soloist's own up-next list.
     SpotifyQueue,
+    YoutubeLiked,
+    YoutubePlaylist,
 }
 
 impl ListRef {
@@ -43,7 +44,6 @@ impl ListRef {
             ListRef::Recent
                 | ListRef::History
                 | ListRef::Results
-                | ListRef::Device
                 | ListRef::SpotifyShelf(super::spotify::Shelf::Recent)
         )
     }
@@ -80,6 +80,7 @@ pub enum MenuAction {
     CopyLink,
     GoArtist,
     GoAlbum,
+    WatchVideo,
 }
 
 pub struct MenuState {
@@ -141,7 +142,7 @@ fn provider_pill<'a, M: 'a>(t: &Track) -> Element<'a, M> {
 }
 
 fn is_playable_source(t: &Track) -> bool {
-    !matches!(t.source, Source::YouTube | Source::Other(_))
+    !matches!(t.source, Source::Other(_))
 }
 
 impl App {
@@ -153,7 +154,8 @@ impl App {
             ListRef::More => self.ui.discover.more.1.clone(),
             ListRef::Recent => self.recent.clone(),
             ListRef::SpotifyQueue => self.ui.spotify.queue.1.clone(),
-            ListRef::Device => self.device_hits(),
+            ListRef::YoutubeLiked => self.ui.youtube.library.liked.clone(),
+            ListRef::YoutubePlaylist => self.youtube_open_tracks(),
             ListRef::Queue => self.player.queue.list.clone(),
             ListRef::Likes => self.store.likes.clone(),
             ListRef::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
@@ -187,7 +189,7 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn device_hits(&self) -> Vec<Track> {
+    pub(crate) fn local_hits(&self, limit: usize) -> Vec<Track> {
         let q = self.ui.discover.query.trim().to_lowercase();
         if q.chars().count() <= 1 {
             return Vec::new();
@@ -199,7 +201,7 @@ impl App {
                     .to_lowercase()
                     .contains(&q)
             })
-            .take(5)
+            .take(limit)
             .cloned()
             .collect()
     }
@@ -606,11 +608,20 @@ impl App {
                 ));
                 height += 40.0;
             }
-            if t.source == Source::SoundCloud {
+            if matches!(t.source, Source::SoundCloud | Source::YouTube) {
                 items = items.push(item(
                     icon(Icon::Sensors, 20.0),
                     "Start radio".into(),
                     MenuAction::Radio,
+                    false,
+                ));
+                height += 40.0;
+            }
+            if t.source == Source::YouTube {
+                items = items.push(item(
+                    icon(Icon::Fullscreen, 20.0),
+                    "Watch video".into(),
+                    MenuAction::WatchVideo,
                     false,
                 ));
                 height += 40.0;
@@ -806,6 +817,10 @@ impl App {
                 Some(id) => self.spotify_go(super::spotify::Route::Album(id)),
                 None => Task::none(),
             },
+            MenuAction::WatchVideo => {
+                self.ui.menu = None;
+                self.on_youtube(super::youtube::Msg::Watch(Box::new(t)))
+            }
             MenuAction::Submenu => Task::none(),
         }
     }
@@ -848,7 +863,6 @@ mod tests {
             ListRef::Recent,
             ListRef::History,
             ListRef::Results,
-            ListRef::Device,
             ListRef::SpotifyShelf(Shelf::Recent),
         ] {
             assert!(!list.is_context(), "{list:?}");

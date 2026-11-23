@@ -107,7 +107,7 @@ impl App {
             Msg::Presence(v) => self.set_setting(|s| s.presence = v),
             Msg::Beta(v) => {
                 self.services.update_config(|c| c.beta = Some(v));
-                self.spotify_boot_or_clear()
+                Task::batch([self.spotify_boot_or_clear(), self.youtube_boot_or_clear()])
             }
             Msg::PlaybackLogin => self.playback_login(),
             Msg::PlaybackReady(result) => {
@@ -439,6 +439,7 @@ impl App {
             )];
             if config.beta == Some(true) {
                 rows.push(self.spotify_settings(p));
+                rows.push(self.youtube_settings(p));
             }
             self.settings_card(rows, p)
         };
@@ -679,6 +680,108 @@ impl App {
                 );
             }
             col = col.push(self.soloist_settings(p));
+        }
+        col.into()
+    }
+
+    fn youtube_settings(&self, p: Palette) -> Element<'_, Message> {
+        use super::youtube::Msg as Yt;
+        let st = &self.ui.youtube;
+        let status = &st.status;
+        let hint = if status.connected {
+            format!(
+                "Connected as {}. Your liked videos and playlists are in the YouTube tab.",
+                status.user.clone().unwrap_or_default()
+            )
+        } else {
+            "YouTube plays, searches YouTube Music in Discover, and fills the queue with similar songs without signing in. Connect a Google account to also browse your liked videos and playlists. Needs your own Google OAuth client.".into()
+        };
+        let action: Element<'_, Message> = if status.connected {
+            tonal_button(
+                "Disconnect",
+                Icon::Close,
+                p,
+                Message::Youtube(Yt::Disconnect),
+            )
+        } else {
+            let label = if st.connecting {
+                "Waiting for Google…"
+            } else {
+                "Connect"
+            };
+            button(container(text(label.to_string()).size(14)).center_y(Length::Fill))
+                .height(40)
+                .padding([0, 24])
+                .style(styles::primary(p))
+                .on_press_maybe(
+                    (!st.connecting && !st.client_id.trim().is_empty())
+                        .then_some(Message::Youtube(Yt::Connect)),
+                )
+                .into()
+        };
+        let mut col = column![container(
+            row![
+                column![
+                    text("YouTube").size(16),
+                    text(hint).size(13).color(p.on_surface_variant)
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                action
+            ]
+            .spacing(24)
+            .align_y(Alignment::Center)
+        )
+        .padding([14, 0])];
+        if !st.error.is_empty() {
+            col = col.push(
+                container(text(st.error.clone()).size(13))
+                    .padding([10, 14])
+                    .width(Length::Fill)
+                    .style(styles::error_box(p)),
+            );
+        }
+        if !status.connected {
+            let field =
+                move |placeholder: &str, value: &str, secure: bool, on: fn(String) -> Yt| {
+                    container(
+                        text_input(placeholder, value)
+                            .on_input(move |s| Message::Youtube(on(s)))
+                            .secure(secure)
+                            .size(14)
+                            .padding([0, 16])
+                            .style(move |_, _| iced::widget::text_input::Style {
+                                background: p.surface_container_highest.into(),
+                                border: iced::border::rounded(12),
+                                icon: p.on_surface_variant,
+                                placeholder: p.on_surface_variant,
+                                value: p.on_surface,
+                                selection: crate::theme::alpha(p.primary, 0.35),
+                            }),
+                    )
+                    .height(44)
+                    .center_y(44)
+                };
+            col = col.push(
+                column![
+                    field("Google client ID", &st.client_id, false, Yt::ClientId),
+                    field(
+                        if status.has_secret {
+                            "Client secret (saved, leave blank to keep)"
+                        } else {
+                            "Client secret"
+                        },
+                        &st.client_secret,
+                        true,
+                        Yt::ClientSecret
+                    ),
+                    text("Make an OAuth client in the Google Cloud console with the YouTube Data API v3 enabled, add http://127.0.0.1:8899/callback as a redirect URI, then paste its client ID and secret here.")
+                        .size(12)
+                        .color(p.on_surface_variant),
+                ]
+                .spacing(8)
+                .padding(iced::Padding { bottom: 14.0, ..iced::Padding::ZERO }),
+            );
         }
         col.into()
     }

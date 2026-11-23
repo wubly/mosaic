@@ -392,9 +392,20 @@ fn loading_an_unavailable_track_reports_why() {
     let mut h = Harness::new();
     let fx = h.send(PlayerInput::Play(track(2, "youtube", 100), None));
     assert!(resolves(&fx).is_empty());
-    assert_eq!(h.c.error, "Not available in this version");
+    assert_eq!(h.c.error, "Turn on YouTube in Settings → Beta");
     h.send(PlayerInput::Play(track(3, "spotify", 100), None));
     assert_eq!(h.c.error, "Connect Spotify in Settings → Beta");
+    h.send(PlayerInput::Play(track(4, "mystery", 100), None));
+    assert_eq!(h.c.error, "Not available in this version");
+}
+
+#[test]
+fn youtube_tracks_play_when_enabled() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::YoutubeAvailable(true));
+    let list = vec![sc(1), track(2, "youtube", 100)];
+    h.start(&sc(1), &list);
+    assert_eq!(resolves(&h.send(PlayerInput::Next)), [2]);
 }
 
 #[test]
@@ -442,6 +453,21 @@ fn autoplay_respects_the_setting_and_source() {
         .ended()
         .iter()
         .all(|e| !matches!(e, Effect::FetchRelated { .. })));
+}
+
+#[test]
+fn autoplay_continues_from_a_youtube_track_too() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::YoutubeAvailable(true));
+    let yt = track(1, "youtube", 200);
+    h.start(&yt, std::slice::from_ref(&yt));
+    match &h.ended()[..] {
+        [Effect::FetchRelated { seed, purpose }, ..] => {
+            assert_eq!(*purpose, RelatedPurpose::Autoplay);
+            assert_eq!(seed.source, mosaic_core::model::Source::YouTube);
+        }
+        other => panic!("expected a related fetch, got {other:?}"),
+    }
 }
 
 #[test]

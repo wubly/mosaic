@@ -180,6 +180,20 @@ impl App {
         .align_y(Alignment::Center);
 
         let lyrics_open = self.settings().lyrics_open;
+        let watch = self
+            .player
+            .track
+            .as_ref()
+            .filter(|t| t.source == mosaic_core::model::Source::YouTube)
+            .map(|t| {
+                icon_btn(
+                    icon(Icon::Fullscreen, 22.0),
+                    "Watch the video".into(),
+                    false,
+                    p,
+                    Message::Youtube(crate::views::youtube::Msg::Watch(Box::new(t.clone()))),
+                )
+            });
         let tools = row![
             icon_btn(
                 icon(
@@ -220,6 +234,10 @@ impl App {
         ]
         .spacing(4)
         .align_y(Alignment::Center);
+        let tools = match watch {
+            Some(button) => row![button, tools].spacing(4).align_y(Alignment::Center),
+            None => tools,
+        };
 
         container(
             row![

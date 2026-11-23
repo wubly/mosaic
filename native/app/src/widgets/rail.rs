@@ -12,6 +12,7 @@ pub enum View {
     Local,
     Queue,
     Spotify,
+    YouTube,
     Settings,
 }
 
@@ -24,6 +25,7 @@ impl View {
             View::Local => "Device",
             View::Queue => "Queue",
             View::Spotify => "Spotify",
+            View::YouTube => "YouTube",
             View::Settings => "Settings",
         }
     }
@@ -37,6 +39,7 @@ impl View {
             View::Local => (Icon::Folder, Icon::FolderOpen),
             View::Queue => (Icon::QueueMusic, Icon::QueueMusic),
             View::Spotify => (Icon::Album, Icon::Album),
+            View::YouTube => (Icon::PlayArrow, Icon::PlayArrow),
             View::Settings => (Icon::Settings, Icon::Settings),
         }
     }
@@ -49,7 +52,7 @@ const PAD_TOP: f32 = 12.0;
 const PAD_BOTTOM: f32 = 4.0;
 const PILL_INSET: f32 = 6.0;
 
-pub fn top_items(spotify: bool) -> Vec<View> {
+pub fn top_items(spotify: bool, youtube: bool) -> Vec<View> {
     let mut items = vec![
         View::Discover,
         View::Library,
@@ -60,12 +63,15 @@ pub fn top_items(spotify: bool) -> Vec<View> {
     if spotify {
         items.push(View::Spotify);
     }
+    if youtube {
+        items.push(View::YouTube);
+    }
     items
 }
 
 /// Where the active pill's top edge sits inside the rail, for the spring target.
-pub fn pill_y(view: View, spotify: bool, rail_height: f32) -> f32 {
-    match top_items(spotify).iter().position(|v| *v == view) {
+pub fn pill_y(view: View, spotify: bool, youtube: bool, rail_height: f32) -> f32 {
+    match top_items(spotify, youtube).iter().position(|v| *v == view) {
         Some(i) => PAD_TOP + PILL_INSET + i as f32 * (ITEM_H + GAP),
         None => rail_height - PAD_BOTTOM - ITEM_H + PILL_INSET,
     }
@@ -130,12 +136,13 @@ pub fn view<'a, Message: Clone + 'a>(
     current: View,
     queue_count: usize,
     spotify: bool,
+    youtube: bool,
     pill_y: f32,
     p: Palette,
     on_select: impl Fn(View) -> Message,
 ) -> Element<'a, Message> {
     let mut items = column![].spacing(GAP).align_x(Alignment::Center);
-    for v in top_items(spotify) {
+    for v in top_items(spotify, youtube) {
         let badge = if v == View::Queue { queue_count } else { 0 };
         items = items.push(item(v, v == current, badge, p, on_select(v)));
     }

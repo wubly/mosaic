@@ -41,6 +41,48 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
                 );
             }
         }
+        "yt-stream" => {
+            let p = services.yt_stream(arg(1)?).await?;
+            println!(
+                "{}\t{}kbps\texpires in {}s",
+                p.mime,
+                p.bitrate / 1000,
+                p.expires_in
+            );
+            println!("{}", p.url);
+        }
+        "yt-watch" => {
+            let hits = services.yt_search(arg(1)?).await?;
+            let track = hits.first().context("no results")?;
+            println!("{} - {} ({})", track.artist, track.title, track.id.key());
+            match services.yt_video_for(track).await? {
+                Some(id) => println!("video: https://www.youtube.com/watch?v={id}"),
+                None => println!("no video"),
+            }
+        }
+        "yt-related" => {
+            for t in services.yt_related(arg(1)?).await? {
+                println!(
+                    "{}\t{} - {} [{}]\t{}ms",
+                    t.id.key(),
+                    t.artist,
+                    t.title,
+                    t.album,
+                    t.duration
+                );
+            }
+        }
+        "yt-search" => {
+            for t in services.yt_search(arg(1)?).await? {
+                println!(
+                    "{}\t{} - {}\t{}ms",
+                    t.id.key(),
+                    t.artist,
+                    t.title,
+                    t.duration
+                );
+            }
+        }
         "sp-search" => {
             let r = services
                 .spotify_search(arg(1)?, mosaic_services::Services::SEARCH_LIMIT)

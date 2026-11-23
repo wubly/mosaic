@@ -45,7 +45,7 @@ you need a recent stable rust. on linux also `pkg-config`, alsa headers (`libaso
 
 ## what changed from the electron version
 
-- **youtube is gone.** it needed a browser to play; saved youtube tracks show as unavailable
+- **youtube is back, as a beta option.** it plays through youtube's own player api instead of a browser embed, so no browser is needed. turn on beta features in settings, then pick youtube in discover's service dropdown or play saved youtube tracks directly. search (youtube music) and similar-song autoplay need no account; connect google in settings to also browse your liked videos and playlists
 - **spotify playback now uses librespot**, an unofficial client. it needs premium and signs in with spotify's own login; browsing, search and playlist import still use your own client id. the widevine / castlabs electron setup is no longer needed
 - importing a spotify playlist reads the public embed (first 100 tracks). connect spotify in settings > beta to import longer or private ones
 - low memory mode and the chromium performance options are gone (nothing to tune)

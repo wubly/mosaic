@@ -7,6 +7,7 @@ pub mod oauth;
 pub mod soundcloud;
 pub mod spotify;
 pub mod update;
+pub mod youtube;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,6 +25,7 @@ pub(crate) struct Inner {
     pub lyrics: lyrics::State,
     pub images: images::State,
     pub spotify: spotify::auth::State,
+    pub youtube: youtube::auth::State,
 }
 
 #[derive(Clone)]
@@ -42,6 +44,7 @@ impl Services {
             inner: Arc::new(Inner {
                 http: http::build_client()?,
                 spotify: spotify::auth::State::load(&dirs),
+                youtube: youtube::auth::State::load(&dirs),
                 dirs,
                 config,
                 sc_client_id: Mutex::new(sc_client_id.filter(|s| !s.is_empty())),
