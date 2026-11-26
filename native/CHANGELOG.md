@@ -2,7 +2,7 @@
 
 Each release's notes on GitHub are its section below (see `.github/workflows/release.yml`).
 
-## 0.7.0
+## 0.6.2
 
 ### Spotify plays through Spotify's own player on Windows and macOS
 

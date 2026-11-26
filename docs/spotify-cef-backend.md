@@ -1,6 +1,6 @@
 # Spotify playback through an embedded CEF player
 
-Status: **shipped in 0.7.0 for Windows (WebView2) and macOS (WKWebView, untested)** as
+Status: **shipped in 0.6.2 for Windows (WebView2) and macOS (WKWebView, untested)** as
 `crates/services/src/spotify/web/` plus `app/src/spotify_host.rs`; `native/DECISIONS.md` lists what
 the implementation settled. Linux keeps librespot/Soloist. The Windows spike (section 14) ran first. Its results changed
 the engine choice; see "Engine decisions" below. Where the rest of this document says "CEF",

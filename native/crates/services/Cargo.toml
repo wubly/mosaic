@@ -16,7 +16,7 @@ librespot-oauth = { version = "0.8.0", default-features = false, features = ["ru
 librespot-playback = { version = "0.8.0", default-features = false, optional = true }
 lofty = "0.25.5"
 lru = "0.19.1"
-mosaic-core = { version = "0.7.0", path = "../core" }
+mosaic-core = { version = "0.6.2", path = "../core" }
 percent-encoding = "2.3.2"
 rand = "0.10.4"
 regex = "1.13.2"
