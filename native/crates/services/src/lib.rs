@@ -3,6 +3,7 @@ pub mod http;
 pub mod images;
 pub mod local;
 pub mod lyrics;
+pub mod monochrome;
 pub mod oauth;
 pub mod ranking;
 pub mod soundcloud;

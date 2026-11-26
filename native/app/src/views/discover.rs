@@ -36,6 +36,7 @@ pub enum SearchService {
     SoundCloud,
     Spotify,
     YouTube,
+    Monochrome,
     Device,
 }
 
@@ -45,6 +46,7 @@ impl SearchService {
             SearchService::SoundCloud => "SoundCloud",
             SearchService::Spotify => "Spotify",
             SearchService::YouTube => "YouTube",
+            SearchService::Monochrome => "Monochrome",
             SearchService::Device => "This device",
         }
     }
@@ -65,6 +67,7 @@ pub enum Msg {
     Clear,
     Results(u64, Result<Vec<Track>, String>),
     YoutubeResults(u64, Result<Vec<Track>, String>),
+    MonochromeResults(u64, Result<Vec<Track>, String>),
     Genre(&'static str),
     Charts(&'static str, Result<Vec<Track>, String>),
     More(String, Result<Vec<Track>, String>),
@@ -75,6 +78,7 @@ pub struct State {
     pub service: SearchService,
     pub results: Vec<Track>,
     pub youtube: Vec<Track>,
+    pub monochrome: Vec<Track>,
     pub busy: bool,
     /// The Spotify search is still out.
     pub sp_busy: bool,
@@ -96,6 +100,7 @@ impl Default for State {
             service: SearchService::default(),
             results: Vec::new(),
             youtube: Vec::new(),
+            monochrome: Vec::new(),
             busy: false,
             sp_busy: false,
             error: String::new(),
@@ -226,6 +231,17 @@ impl App {
                 }
                 Task::none()
             }
+            Msg::MonochromeResults(seq, result) => {
+                if seq != self.ui.discover.seq {
+                    return Task::none();
+                }
+                self.ui.discover.busy = false;
+                match result {
+                    Ok(list) => self.ui.discover.monochrome = list,
+                    Err(e) => self.ui.discover.error = e,
+                }
+                Task::none()
+            }
             Msg::Results(seq, result) => {
                 if seq != self.ui.discover.seq {
                     return Task::none();
@@ -261,8 +277,8 @@ impl App {
         }
     }
 
-    /// The services a search can use right now. SoundCloud and the device are always there;
-    /// YouTube needs the beta but not an account.
+    /// The services a search can use right now. SoundCloud, Monochrome and the device are
+    /// always there; YouTube needs the beta but not an account.
     pub(crate) fn search_services(&self) -> Vec<SearchService> {
         let mut list = vec![SearchService::SoundCloud];
         if self.spotify_enabled() {
@@ -271,6 +287,7 @@ impl App {
         if self.youtube_playable() {
             list.push(SearchService::YouTube);
         }
+        list.push(SearchService::Monochrome);
         list.push(SearchService::Device);
         list
     }
@@ -289,6 +306,7 @@ impl App {
         let d = &mut self.ui.discover;
         d.results.clear();
         d.youtube.clear();
+        d.monochrome.clear();
         d.busy = false;
         d.sp_busy = false;
         self.ui.spotify.search = Default::default();
@@ -300,6 +318,7 @@ impl App {
             SearchService::SoundCloud => self.ui.discover.results.clone(),
             SearchService::Spotify => self.ui.spotify.search.tracks.clone(),
             SearchService::YouTube => self.ui.discover.youtube.clone(),
+            SearchService::Monochrome => self.ui.discover.monochrome.clone(),
             SearchService::Device => self.local_hits(60),
         }
     }
@@ -309,8 +328,10 @@ impl App {
         let seq = self.ui.discover.seq;
         let service = self.search_service();
         self.ui.discover.error.clear();
-        self.ui.discover.busy =
-            matches!(service, SearchService::SoundCloud | SearchService::YouTube);
+        self.ui.discover.busy = matches!(
+            service,
+            SearchService::SoundCloud | SearchService::YouTube | SearchService::Monochrome
+        );
         self.ui.discover.sp_busy = service == SearchService::Spotify;
         let services = self.services.clone();
         match service {
@@ -322,6 +343,10 @@ impl App {
             SearchService::YouTube => Task::perform(
                 async move { services.yt_search(&q).await.map_err(|e| e.to_string()) },
                 move |r| Message::Discover(Msg::YoutubeResults(seq, r)),
+            ),
+            SearchService::Monochrome => Task::perform(
+                async move { services.mono_search(&q).await.map_err(|e| e.to_string()) },
+                move |r| Message::Discover(Msg::MonochromeResults(seq, r)),
             ),
             SearchService::Device => Task::none(),
         }

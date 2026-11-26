@@ -29,7 +29,7 @@ cargo run --release -p mosaic
 Flags: `--version`, `--data-dir <path>`, `--reset-window` (restore default panel sizes), `<files>` (added to the library
 and played). Environment: `MOSAIC_DECORATIONS=1`, `MOSAIC_REDUCED_MOTION=1`, `MOSAIC_LOG=<filter>`.
 
-Debug helpers (behind the default `debug-cli` feature): `--debug-cmd sc-search|sc-stream|lyrics|scan|play|sc-play|queue-play …`,
+Debug helpers (behind the default `debug-cli` feature): `--debug-cmd sc-search|mono-search|sc-stream|lyrics|scan|play|sc-play|queue-play …`,
 `--debug-theme <image>`, `--debug-view <view>`, `--debug-import <spotify url>` and `--debug-screenshot <png>`
 (saves only the Mosaic window and exits).
 

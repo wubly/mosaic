@@ -37,3 +37,36 @@ async fn net_lrclib_returns_synced_lyrics() {
     let synced: &Vec<LyricLine> = &lyrics.synced;
     assert!(!synced.is_empty(), "no synced lyrics: {:?}", lyrics.meta);
 }
+
+#[tokio::test]
+#[ignore]
+async fn net_monochrome_search_and_stream() {
+    let (s, _dir) = services();
+    let tracks = s.mono_search("daft punk one more time").await.unwrap();
+    let first = tracks.first().expect("no results");
+    assert!(first.title.to_lowercase().contains("one more time"));
+    let url = mosaic_services::monochrome::stream_url(&first.id);
+    let res = s
+        .http()
+        .get(&url)
+        .header("Range", "bytes=0-3")
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    assert_eq!(&res.bytes().await.unwrap()[..], b"fLaC");
+}
+
+#[tokio::test]
+#[ignore]
+async fn net_monochrome_radio() {
+    let (s, _dir) = services();
+    let hits = s.mono_search("daft punk one more time").await.unwrap();
+    let seed = hits.first().expect("no results");
+    let radio = s.mono_related(seed, 20).await.unwrap();
+    for t in &radio {
+        println!("{} - {} ({})", t.artist, t.title, t.id.key());
+    }
+    assert!(radio.len() >= 10, "only {} tracks", radio.len());
+    assert!(radio.iter().all(|t| t.id != seed.id));
+}

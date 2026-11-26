@@ -93,6 +93,7 @@ pub fn source_name(t: &Track) -> &'static str {
     match t.source {
         Source::Spotify => "Spotify",
         Source::YouTube => "YouTube",
+        Source::Monochrome => "Monochrome",
         _ => "SoundCloud",
     }
 }
@@ -103,6 +104,7 @@ pub fn source_color(t: &Track) -> iced::Color {
         Source::Spotify => iced::Color::from_rgb8(0x1E, 0xD7, 0x60),
         Source::SoundCloud => iced::Color::from_rgb8(0xFF, 0x77, 0x00),
         Source::YouTube => iced::Color::from_rgb8(0xFF, 0x33, 0x33),
+        Source::Monochrome => iced::Color::from_rgb8(0xE6, 0xE6, 0xE6),
         _ => iced::Color::from_rgb8(0x9E, 0x9E, 0x9E),
     }
 }
@@ -608,7 +610,10 @@ impl App {
                 ));
                 height += 40.0;
             }
-            if matches!(t.source, Source::SoundCloud | Source::YouTube) {
+            if matches!(
+                t.source,
+                Source::SoundCloud | Source::YouTube | Source::Monochrome
+            ) {
                 items = items.push(item(
                     icon(Icon::Sensors, 20.0),
                     "Start radio".into(),

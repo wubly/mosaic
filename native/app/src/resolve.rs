@@ -49,6 +49,12 @@ pub async fn resolve_stream(
                 silence: None,
             })
         }
+        Source::Monochrome => Ok(Stream {
+            source: SourceSpec::Http {
+                url: mosaic_services::monochrome::stream_url(&track.id),
+            },
+            silence: None,
+        }),
         #[cfg(feature = "spotify")]
         Source::Spotify => spotify(services, track, seek_to).await,
         _ => Err("Could not play this track".into()),

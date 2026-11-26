@@ -471,6 +471,28 @@ fn autoplay_continues_from_a_youtube_track_too() {
 }
 
 #[test]
+fn autoplay_and_radio_continue_from_a_monochrome_track() {
+    let mut h = Harness::new();
+    let mono = track(1, "monochrome", 200);
+    h.start(&mono, std::slice::from_ref(&mono));
+    match &h.ended()[..] {
+        [Effect::FetchRelated { seed, purpose }, ..] => {
+            assert_eq!(*purpose, RelatedPurpose::Autoplay);
+            assert_eq!(seed.source, mosaic_core::model::Source::Monochrome);
+        }
+        other => panic!("expected a related fetch, got {other:?}"),
+    }
+    let fx = h.send(PlayerInput::StartRadio(mono));
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::FetchRelated {
+            purpose: RelatedPurpose::Radio,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn autoplay_result_for_a_changed_track_is_dropped() {
     let mut h = Harness::new();
     h.start(&sc(2), &list(&[1, 2]));

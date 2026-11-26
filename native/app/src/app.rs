@@ -637,6 +637,9 @@ impl App {
                                     .yt_related(seed.video_id.as_deref().unwrap_or_default())
                                     .await
                                     .map(|list| list.into_iter().take(limit as usize).collect()),
+                                mosaic_core::model::Source::Monochrome => {
+                                    services.mono_related(&seed, limit as usize).await
+                                }
                                 _ => services.sc_related(&seed.id, limit).await,
                             }
                             .map_err(|e| e.to_string());

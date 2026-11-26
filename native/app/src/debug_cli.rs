@@ -80,6 +80,19 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
                 );
             }
         }
+        "mono-search" => {
+            for t in services.mono_search(arg(1)?).await? {
+                println!("{}	{} - {}	{}ms", t.id.key(), t.artist, t.title, t.duration);
+            }
+        }
+        "mono-radio" => {
+            let hits = services.mono_search(arg(1)?).await?;
+            let seed = hits.first().context("no results")?;
+            println!("seed: {} - {} ({})", seed.artist, seed.title, seed.id.key());
+            for t in services.mono_related(seed, 20).await? {
+                println!("{}	{} - {}	{}ms", t.id.key(), t.artist, t.title, t.duration);
+            }
+        }
         "yt-search" => {
             for t in services.yt_search(arg(1)?).await? {
                 println!(

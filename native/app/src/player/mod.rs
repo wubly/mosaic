@@ -772,9 +772,12 @@ impl PlayerController {
         let can_continue = auto
             && self.settings.autoplay
             && !self.fetching_more
-            && seed
-                .as_ref()
-                .is_some_and(|t| matches!(t.source, Source::SoundCloud | Source::YouTube));
+            && seed.as_ref().is_some_and(|t| {
+                matches!(
+                    t.source,
+                    Source::SoundCloud | Source::YouTube | Source::Monochrome
+                )
+            });
         if let (true, Some(seed)) = (can_continue, seed) {
             self.fetching_more = true;
             fx.push(Effect::FetchRelated {

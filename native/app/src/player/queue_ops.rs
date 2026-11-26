@@ -40,7 +40,7 @@ impl PlayerController {
 
     pub(super) fn start_radio(&mut self, track: Track, now: Instant, fx: &mut Vec<Effect>) {
         fx.push(Effect::Toast(radio_start_toast(&track.title)));
-        if track.source == Source::SoundCloud {
+        if matches!(track.source, Source::SoundCloud | Source::Monochrome) {
             fx.push(Effect::FetchRelated {
                 seed: track,
                 purpose: RelatedPurpose::Radio,

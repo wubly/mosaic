@@ -52,6 +52,7 @@ pub enum Source {
     Local,
     Spotify,
     YouTube,
+    Monochrome,
     Other(String),
 }
 
@@ -62,6 +63,7 @@ impl Source {
             Source::Local => "local",
             Source::Spotify => "spotify",
             Source::YouTube => "youtube",
+            Source::Monochrome => "monochrome",
             Source::Other(s) => s,
         }
     }
@@ -81,6 +83,7 @@ impl<'de> Deserialize<'de> for Source {
             "local" => Source::Local,
             "spotify" => Source::Spotify,
             "youtube" => Source::YouTube,
+            "monochrome" => Source::Monochrome,
             _ => Source::Other(s),
         })
     }
