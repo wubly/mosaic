@@ -16,7 +16,7 @@ librespot-oauth = { version = "0.8.0", default-features = false, features = ["ru
 librespot-playback = { version = "0.8.0", default-features = false, optional = true }
 lofty = "0.25.5"
 lru = "0.19.1"
-mosaic-core = { version = "0.6.1", path = "../core" }
+mosaic-core = { version = "0.7.0", path = "../core" }
 percent-encoding = "2.3.2"
 rand = "0.10.4"
 regex = "1.13.2"
@@ -28,7 +28,7 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util", "process"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect"], optional = true }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"], optional = true }
 tracing = "0.1.44"
 unicode-normalization = "0.1.26"
 url = "2.5.9"

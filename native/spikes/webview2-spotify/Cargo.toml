@@ -1,0 +1,17 @@
+[package]
+name = "webview2-spotify-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Not a member of the Mosaic workspace. A separate crate from ../cef-spotify so its dependencies
+# never change the CEF build (which re-downloads CEF when shared features change).
+[workspace]
+
+[[bin]]
+name = "webview2-spike"
+path = "src/main.rs"
+
+[dependencies]
+wry = "=0.58.0"
+tao = "=0.38.0"

@@ -12,6 +12,8 @@ mod images;
 mod logging;
 mod player;
 mod resolve;
+#[cfg(all(feature = "spotify", any(windows, target_os = "macos")))]
+mod spotify_host;
 mod text_measure;
 mod theme;
 mod video;
@@ -26,6 +28,12 @@ use mosaic_core::storage::{load_config, load_store, migrate_legacy, Dirs};
 use mosaic_services::Services;
 
 fn main() -> anyhow::Result<()> {
+    // The hidden Spotify web player Mosaic starts for itself: no window, no single-instance
+    // check, no app state.
+    #[cfg(all(feature = "spotify", any(windows, target_os = "macos")))]
+    if std::env::args().nth(1).as_deref() == Some("--spotify-host") {
+        return spotify_host::run();
+    }
     // Both `ring` and `aws-lc-rs` are linked, so rustls cannot choose one itself.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     tune_malloc();

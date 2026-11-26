@@ -1,10 +1,13 @@
-//! Spotify playback (feature `spotify`). librespot decodes in-process and a custom sink hands the
-//! audio to whoever called `load` (the engine's push source). Accounts Spotify refuses librespot
-//! keys for can use Spotify Soloist instead (see `soloist`), picked when a Soloist key is saved.
+//! Spotify playback (feature `spotify`). Which backend plays depends on the platform:
+//! - Windows and macOS: Spotify's Web Playback SDK in the system web view (`web`).
+//! - Linux: librespot decodes in-process and a custom sink hands the audio to whoever called
+//!   `load` (the engine's push source). Accounts Spotify refuses librespot keys for can use
+//!   Spotify Soloist instead (see `soloist`), picked when a Soloist key is saved.
 
 use std::sync::{Arc, Mutex};
 
 use super::soloist::{Soloist, NOT_PAIRED};
+use super::web::WebPlayer;
 use crate::Services;
 use anyhow::{anyhow, Result};
 use librespot_core::authentication::Credentials;
@@ -29,6 +32,10 @@ fn shut_down(backend: &SpotifyPlayback) {
         SpotifyPlayback::Soloist(s) => {
             s.stop();
             s.shutdown();
+        }
+        SpotifyPlayback::Web(w) => {
+            w.stop();
+            w.shutdown();
         }
     }
 }
@@ -97,7 +104,11 @@ pub struct Librespot {
 pub enum SpotifyPlayback {
     Librespot(Librespot),
     Soloist(Soloist),
+    Web(WebPlayer),
 }
+
+/// Whether this platform plays Spotify through the system web view.
+pub const USES_WEB_PLAYER: bool = cfg!(any(windows, target_os = "macos"));
 
 impl SpotifyPlayback {
     /// Starts `uri` at `position_ms`; audio (or, for Soloist, a silent clock) goes to `target`.
@@ -105,6 +116,7 @@ impl SpotifyPlayback {
         match self {
             Self::Librespot(l) => l.load(uri, position_ms, target),
             Self::Soloist(s) => s.load(uri, position_ms, target),
+            Self::Web(w) => w.load(uri, position_ms, target),
         }
     }
 
@@ -112,6 +124,7 @@ impl SpotifyPlayback {
         match self {
             Self::Librespot(l) => l.pause(),
             Self::Soloist(s) => s.pause(),
+            Self::Web(w) => w.pause(),
         }
     }
 
@@ -119,6 +132,7 @@ impl SpotifyPlayback {
         match self {
             Self::Librespot(l) => l.resume(),
             Self::Soloist(s) => s.resume(),
+            Self::Web(w) => w.resume(),
         }
     }
 
@@ -126,6 +140,7 @@ impl SpotifyPlayback {
         match self {
             Self::Librespot(l) => l.seek(position_ms),
             Self::Soloist(s) => s.seek(position_ms),
+            Self::Web(w) => w.seek(position_ms),
         }
     }
 
@@ -133,13 +148,17 @@ impl SpotifyPlayback {
         match self {
             Self::Librespot(l) => l.stop(),
             Self::Soloist(s) => s.stop(),
+            Self::Web(w) => w.stop(),
         }
     }
 
-    /// librespot's audio runs through the deck (which applies the volume); Soloist's doesn't.
+    /// librespot's audio runs through the deck (which applies the volume); Soloist's and the web
+    /// player's don't.
     pub fn set_volume(&self, v: f64) {
-        if let Self::Soloist(s) = self {
-            s.set_volume(v);
+        match self {
+            Self::Soloist(s) => s.set_volume(v),
+            Self::Web(w) => w.set_volume(v),
+            Self::Librespot(_) => {}
         }
     }
 
@@ -147,7 +166,7 @@ impl SpotifyPlayback {
     /// librespot.
     pub fn queue(&self) -> (Option<String>, Vec<mosaic_core::model::Track>) {
         match self {
-            Self::Librespot(_) => (None, Vec::new()),
+            Self::Librespot(_) | Self::Web(_) => (None, Vec::new()),
             Self::Soloist(s) => s.queue(),
         }
     }
@@ -155,7 +174,7 @@ impl SpotifyPlayback {
     /// Asks Spotify to skip to its own next track; returns false where that isn't possible.
     pub fn skip_next(&self) -> bool {
         match self {
-            Self::Librespot(_) => false,
+            Self::Librespot(_) | Self::Web(_) => false,
             Self::Soloist(s) => {
                 s.skip_next();
                 true
@@ -169,6 +188,7 @@ impl SpotifyPlayback {
             Self::Librespot(_) => "Spotify playback is ready".into(),
             Self::Soloist(s) if s.paired() => "Spotify Soloist is running and paired".into(),
             Self::Soloist(_) => NOT_PAIRED.into(),
+            Self::Web(w) => w.describe(),
         }
     }
 }
@@ -222,15 +242,18 @@ async fn login(cache: &Cache) -> Result<Credentials> {
 }
 
 impl Services {
-    /// The playback backend, created on first use: Soloist when a Soloist key is saved, otherwise
-    /// librespot. A Soloist that died is restarted.
+    /// The playback backend, created on first use. Windows and macOS: the system web player.
+    /// Linux: Soloist when a Soloist key is saved, otherwise librespot. A backend that died (or
+    /// a web player stopped while idle) is restarted.
     pub async fn spotify_playback(&self) -> Result<SpotifyPlayback> {
         let mut slot = BACKEND.lock().await;
         let soloist = self.soloist_settings();
+        let use_soloist = !USES_WEB_PLAYER && soloist.configured();
         if let Some(current) = slot.as_ref() {
             let keep = match current {
-                SpotifyPlayback::Soloist(s) => soloist.configured() && s.alive(),
-                SpotifyPlayback::Librespot(_) => !soloist.configured(),
+                SpotifyPlayback::Web(w) => USES_WEB_PLAYER && w.alive(),
+                SpotifyPlayback::Soloist(s) => use_soloist && s.alive(),
+                SpotifyPlayback::Librespot(_) => !USES_WEB_PLAYER && !use_soloist,
             };
             if keep {
                 return Ok(current.clone());
@@ -238,7 +261,9 @@ impl Services {
             shut_down(current);
             *slot = None;
         }
-        let backend = if soloist.configured() {
+        let backend = if USES_WEB_PLAYER {
+            SpotifyPlayback::Web(self.start_web_player().await?)
+        } else if use_soloist {
             SpotifyPlayback::Soloist(self.start_soloist(&soloist).await?)
         } else {
             SpotifyPlayback::Librespot(self.create_playback().await?)

@@ -1,5 +1,6 @@
 //! PKCE sign-in against the user's own Spotify app (port of `electron/spotify/auth.js`).
-//! Playback is librespot's job, so the `streaming` and playback-control scopes are not requested.
+//! The `streaming` and playback-control scopes let the Web Playback SDK play through the
+//! system web view on Windows and macOS (`spotify::web`).
 
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,7 +18,7 @@ use mosaic_core::storage::{read_json, write_json_atomic};
 
 pub const PORT: u16 = 8898;
 pub const REDIRECT: &str = "http://127.0.0.1:8898/callback";
-const SCOPES: &str = "user-read-email user-read-private user-library-read user-library-modify user-follow-read user-follow-modify playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-top-read user-read-recently-played";
+const SCOPES: &str = "user-read-email user-read-private user-library-read user-library-modify user-follow-read user-follow-modify playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-top-read user-read-recently-played streaming user-read-playback-state user-modify-playback-state";
 /// Scopes added after the first release; a token without them is read-only until reconnected.
 const EDIT_SCOPES: [&str; 4] = [
     "user-library-modify",
@@ -249,6 +250,11 @@ impl Services {
 
     /// Whether the stored token carries the library and playlist edit scopes.
     pub fn spotify_can_edit(&self) -> bool {
+        self.spotify_granted(&EDIT_SCOPES)
+    }
+
+    /// Whether the stored token carries all of `scopes`.
+    pub(crate) fn spotify_granted(&self, scopes: &[&str]) -> bool {
         self.inner
             .spotify
             .tokens
@@ -257,7 +263,7 @@ impl Services {
             .and_then(|t| t.as_ref().and_then(|t| t.scope.clone()))
             .is_some_and(|s| {
                 let granted: Vec<&str> = s.split_whitespace().collect();
-                EDIT_SCOPES.iter().all(|e| granted.contains(e))
+                scopes.iter().all(|e| granted.contains(e))
             })
     }
 
@@ -395,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn authorize_url_carries_the_pkce_parameters_without_playback_scopes() {
+    fn authorize_url_carries_the_pkce_parameters_and_playback_scopes() {
         let url = authorize_url("cid", "chal", "st");
         assert!(url.starts_with("https://accounts.spotify.com/authorize?"));
         assert!(
@@ -404,7 +410,7 @@ mod tests {
                 && url.contains("state=st")
         );
         assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8898%2Fcallback"));
-        assert!(!url.contains("streaming") && !url.contains("modify-playback"));
+        assert!(url.contains("streaming") && url.contains("user-modify-playback-state"));
         assert!(url.contains("playlist-read-private"));
     }
 

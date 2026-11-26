@@ -1,0 +1,11 @@
+[package]
+name = "cef-spotify-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Not a member of the Mosaic workspace: this throwaway test must never affect the app's build.
+[workspace]
+
+[dependencies]
+cef = { version = "=156.7.0", default-features = false }

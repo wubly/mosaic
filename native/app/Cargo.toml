@@ -12,10 +12,10 @@ crossbeam-channel = "0.5.17"
 iced = { version = "0.14.0", features = ["tokio", "image", "canvas", "advanced"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 material-colors = { version = "0.5.0", features = ["quantize"] }
-mosaic-audio = { version = "0.6.1", path = "../crates/audio" }
-mosaic-core = { version = "0.6.1", path = "../crates/core" }
-mosaic-platform = { version = "0.6.1", path = "../crates/platform" }
-mosaic-services = { version = "0.6.1", path = "../crates/services", default-features = false }
+mosaic-audio = { version = "0.7.0", path = "../crates/audio" }
+mosaic-core = { version = "0.7.0", path = "../crates/core" }
+mosaic-platform = { version = "0.7.0", path = "../crates/platform" }
+mosaic-services = { version = "0.7.0", path = "../crates/services", default-features = false }
 rand = "0.10"
 rfd = "0.18.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -25,6 +25,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-normalization = "0.1.26"
 
+# The hidden system web view that plays Spotify on Windows and macOS (`mosaic --spotify-host`).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tao = { version = "0.37.0", optional = true }
+wry = { version = "0.57.0", optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 libc = "0.2"
@@ -32,7 +37,7 @@ libc = "0.2"
 [features]
 default = ["debug-cli", "spotify"]
 debug-cli = []
-spotify = ["mosaic-services/spotify"]
+spotify = ["mosaic-services/spotify", "dep:tao", "dep:wry"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

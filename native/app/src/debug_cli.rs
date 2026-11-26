@@ -13,6 +13,13 @@ fn services(dirs: Dirs) -> Result<Services> {
 }
 
 pub fn run(dirs: Dirs, cmd: &[String]) -> Result<()> {
+    // Service logs to stderr (RUST_LOG overrides), so backend trouble shows up here.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("mosaic_services=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -208,7 +215,21 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             let ids = (1..cmd.len())
                 .map(|i| Ok(TrackId::Num(arg(i)?.parse()?)))
                 .collect::<Result<Vec<_>>>()?;
-            queue_play(services, ids).await?;
+            let tracks = ids.iter().map(stub_track).collect::<Result<Vec<_>>>()?;
+            queue_play(services, tracks, 6.0).await?;
+        }
+        // Plays the first `count` Spotify search results through the real controller and
+        // resolver (the UI's path): the platform's Spotify backend end to end.
+        "sp-play" => {
+            let count = cmd.get(2).map_or(Ok(2), |v| v.parse::<usize>())?;
+            let r = services
+                .spotify_search(arg(1)?, mosaic_services::Services::SEARCH_LIMIT)
+                .await?;
+            let tracks: Vec<_> = r.tracks.into_iter().take(count).collect();
+            for t in &tracks {
+                println!("queued {} - {} ({}ms)", t.artist, t.title, t.duration);
+            }
+            queue_play(services, tracks, 0.0).await?;
         }
         other => bail!("unknown debug command `{other}`"),
     }
@@ -245,8 +266,12 @@ fn play(source: mosaic_audio::SourceSpec, start_at: f64) -> Result<()> {
     Ok(())
 }
 
-/// Plays a SoundCloud queue through the real controller with a 6 s crossfade.
-async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
+/// Plays a queue through the real controller and resolver.
+async fn queue_play(
+    services: Services,
+    tracks: Vec<mosaic_core::model::Track>,
+    crossfade: f64,
+) -> Result<()> {
     use std::time::Instant;
 
     use mosaic_audio::Engine;
@@ -255,8 +280,7 @@ async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
     use crate::player::{Effect, PlayerController, PlayerInput};
     use crate::resolve::resolve_stream;
 
-    let tracks = ids.iter().map(stub_track).collect::<Result<Vec<_>>>()?;
-    let first = tracks.first().cloned().context("need at least one id")?;
+    let first = tracks.first().cloned().context("need at least one track")?;
 
     let engine = Engine::start()?;
     let (tx, rx) = crossbeam_channel::unbounded::<PlayerInput>();
@@ -278,7 +302,7 @@ async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
     }
 
     let mut controller = PlayerController::new(Settings {
-        crossfade: 6.0,
+        crossfade,
         ..Settings::default()
     });
     for effect in controller.sync_engine() {
@@ -286,7 +310,12 @@ async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
             engine.send(c);
         }
     }
-    let mut pending = vec![PlayerInput::Play(first, Some(tracks))];
+    // Popped from the end: Spotify is marked available (the app does that once it's connected;
+    // here the token comes with the data folder), then the queue plays.
+    let mut pending = vec![
+        PlayerInput::Play(first, Some(tracks)),
+        PlayerInput::SpotifyAvailable(cfg!(feature = "spotify")),
+    ];
     let mut outstanding = 0usize;
     let mut last_print = -10.0;
     loop {
@@ -296,9 +325,18 @@ async fn queue_play(services: Services, ids: Vec<TrackId>) -> Result<()> {
         };
         let mut done = false;
         match &input {
-            PlayerInput::StreamResolved { .. } | PlayerInput::Related { .. } => {
-                outstanding = outstanding.saturating_sub(1)
+            PlayerInput::StreamResolved { result, .. } => {
+                outstanding = outstanding.saturating_sub(1);
+                match result {
+                    Ok(_) => {
+                        println!("resolved");
+                        // A new track starts its clock again.
+                        last_print = -10.0;
+                    }
+                    Err(e) => println!("resolve failed: {e}"),
+                }
             }
+            PlayerInput::Related { .. } => outstanding = outstanding.saturating_sub(1),
             PlayerInput::Engine(mosaic_audio::Event::Position { secs, .. })
                 if secs - last_print >= 1.0 =>
             {

@@ -1,6 +1,6 @@
 # Mosaic (native)
 
-Native Rust rewrite of Mosaic: iced UI, our own audio engine (symphonia, rubato, cpal), librespot for Spotify.
+Native Rust rewrite of Mosaic: iced UI, our own audio engine (symphonia, rubato, cpal). Spotify plays through Spotify's Web Playback SDK in the system web view on Windows and macOS (`services::spotify::web`), and through librespot or Spotify Soloist on Linux.
 The build spec is `../docs/native-rewrite.md`; deliberate deviations are in `DECISIONS.md`.
 
 ## Layout
@@ -46,7 +46,7 @@ cargo build --no-default-features # without librespot
 Bump `version` in `[workspace.package]` (`Cargo.toml`), commit, then push a matching tag:
 
 ```sh
-git tag v0.6.1 && git push origin v0.6.1
+git tag v0.7.0 && git push origin v0.7.0
 ```
 
 `.github/workflows/release.yml` builds the Linux AppImage, `.deb` and tarball (on Ubuntu 22.04 for glibc reach), the

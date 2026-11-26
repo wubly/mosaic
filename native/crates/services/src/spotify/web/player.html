@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mosaic Spotify player</title>
+<!--
+  Served by Mosaic's bridge at http://127.0.0.1:<port>/player and opened in a hidden system web
+  view (WebView2 on Windows, WKWebView on macOS). Runs Spotify's Web Playback SDK and talks to
+  Mosaic over a WebSocket on the same origin. See docs/spotify-cef-backend.md, section 5.
+-->
+<script>
+"use strict";
+const PROTOCOL = 1;
+const secret = new URLSearchParams(location.hash.slice(1)).get("s") || "";
+const ws = new WebSocket(`ws://${location.host}/ws`);
+let player = null;
+let tokenWaiters = [];
+
+const send = (msg) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+};
+// The SDK's position is a snapshot taken at `timestamp`; while playing, the live position runs on.
+const live = (s) => (s.paused || !s.timestamp ? s.position : s.position + (Date.now() - s.timestamp));
+
+function report(s) {
+  if (!s) return;
+  const cur = s.track_window && s.track_window.current_track;
+  send({
+    type: "state",
+    uri: cur ? cur.uri : null,
+    linked_from: cur && cur.linked_from ? cur.linked_from.uri : null,
+    paused: !!s.paused,
+    loading: !!s.loading,
+    position_ms: Math.max(0, Math.round(live(s))),
+    duration_ms: s.duration || 0,
+  });
+}
+
+function startPlayer() {
+  player = new Spotify.Player({
+    name: "Mosaic",
+    getOAuthToken: (cb) => {
+      tokenWaiters.push(cb);
+      send({ type: "need_token" });
+    },
+    volume: 1.0,
+  });
+  player.addListener("ready", ({ device_id }) => send({ type: "ready", device_id }));
+  player.addListener("not_ready", ({ device_id }) => send({ type: "not_ready", device_id }));
+  for (const [event, kind] of [
+    ["initialization_error", "init"],
+    ["authentication_error", "auth"],
+    ["account_error", "account"],
+    ["playback_error", "playback"],
+  ]) {
+    player.addListener(event, ({ message }) => send({ type: "error", kind, message: message || event }));
+  }
+  player.addListener("autoplay_failed", () => send({ type: "error", kind: "autoplay", message: "autoplay blocked" }));
+  player.addListener("player_state_changed", report);
+  player.connect().then((ok) => {
+    if (!ok) send({ type: "error", kind: "init", message: "the player could not connect" });
+  });
+  // player_state_changed doesn't fire continuously; keep Mosaic's clock fresh while playing.
+  setInterval(async () => {
+    const s = await player.getCurrentState();
+    if (s && !s.paused) report(s);
+  }, 1000);
+}
+
+ws.onopen = () => {
+  send({ type: "hello", secret, v: PROTOCOL });
+  window.onSpotifyWebPlaybackSDKReady = startPlayer;
+  const sdk = document.createElement("script");
+  sdk.src = "https://sdk.scdn.co/spotify-player.js";
+  sdk.onerror = () => send({ type: "error", kind: "init", message: "could not load Spotify's player script" });
+  document.head.appendChild(sdk);
+};
+
+ws.onmessage = (event) => {
+  let msg;
+  try { msg = JSON.parse(event.data); } catch (_) { return; }
+  switch (msg.type) {
+    case "token":
+      tokenWaiters.splice(0).forEach((cb) => cb(msg.token));
+      break;
+    case "pause":
+      if (player) player.pause();
+      break;
+    case "resume":
+      if (player) player.resume();
+      break;
+    case "seek":
+      if (player) player.seek(msg.position_ms);
+      break;
+    case "volume":
+      if (player) player.setVolume(Math.min(1, Math.max(0, msg.value)));
+      break;
+    case "activate":
+      if (player && player.activateElement) player.activateElement();
+      break;
+  }
+};
+
+// Mosaic restarts the whole host if the bridge goes away; nothing to do here.
+ws.onclose = () => { if (player) player.disconnect(); };
+</script>

@@ -1,0 +1,311 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CEF Spotify spike – SDK</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; }
+  button { margin: 4px 4px 4px 0; }
+  input { width: 100%; box-sizing: border-box; }
+  pre { background: #f2f2f2; padding: 8px; max-height: 55vh; overflow: auto; font-size: 12px; }
+</style>
+<h3>Web Playback SDK in CEF</h3>
+<p id="who">Not signed in.</p>
+<button id="signin">Sign in to Spotify</button>
+<button id="forget">Forget token</button>
+<p><label>Tracks for the sequence (comma-separated URIs)<br><input id="uris"></label></p>
+<button id="run" disabled>Run test sequence</button>
+<button id="pause" disabled>Pause</button>
+<button id="resume" disabled>Resume</button>
+<button id="seek" disabled>Seek +30 s</button>
+<pre id="out"></pre>
+<script>
+"use strict";
+const CLIENT_ID = "__CLIENT_ID__";
+const AUTORUN = __AUTORUN__;
+const CHECK = __CHECK__;
+const POST_LOGS = location.hash.includes("post") || sessionStorage.getItem("spike_post") === "1";
+if (POST_LOGS) sessionStorage.setItem("spike_post", "1");
+const DEFAULT_TRACKS = [
+  "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+  "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp",
+  "spotify:track:7qiZfU4dY1lWllzX7mPBI3",
+];
+const REDIRECT = location.origin + "/callback";
+const SCOPES = "streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state";
+const $ = (id) => document.getElementById(id);
+const t0 = performance.now();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const now = () => Math.round(performance.now() - t0);
+
+function log(kind, data = {}) {
+  const line = JSON.stringify({ t: now(), kind, ...data });
+  console.log("[spike] " + line);
+  // WebView2 has no console hook in the host: send the line to the spike's server instead.
+  // An external browser (opened with #post) has no host console hook either.
+  if (/Edg\/|Firefox\//.test(navigator.userAgent) || POST_LOGS) {
+    fetch("/log", { method: "POST", body: line, headers: { "Content-Type": "text/plain" } }).catch(() => {});
+  }
+  $("out").textContent += line + "\n";
+  $("out").scrollTop = 1e9;
+}
+
+$("uris").value = "__TRACKS__" || DEFAULT_TRACKS.join(",");
+
+
+// ---- PKCE sign-in (token kept in this CEF profile's localStorage) ----
+
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function signIn() {
+  if (!CLIENT_ID) { log("error", { where: "signin", message: "no --spike-client-id given" }); return; }
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  localStorage.setItem("spike_verifier", verifier);
+  const q = new URLSearchParams({
+    client_id: CLIENT_ID, response_type: "code", redirect_uri: REDIRECT,
+    scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge,
+  });
+  location.href = "https://accounts.spotify.com/authorize?" + q;
+}
+
+async function tokenRequest(params) {
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: CLIENT_ID, ...params }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error("token " + r.status + " " + JSON.stringify(j));
+  const saved = {
+    access: j.access_token,
+    refresh: j.refresh_token || params.refresh_token,
+    expires: Date.now() + (j.expires_in - 60) * 1000,
+    scope: j.scope,
+  };
+  await saveToken(saved);
+  return saved;
+}
+
+// Kept in a file by the spike's server: localStorage didn't survive a force-closed window.
+async function loadToken() {
+  const r = await fetch("/token", { cache: "no-store" });
+  return r.ok ? r.json() : null;
+}
+
+async function saveToken(saved) {
+  await fetch("/token", { method: "PUT", body: JSON.stringify(saved) });
+}
+
+async function token() {
+  let saved = await loadToken();
+  if (!saved) return null;
+  if (Date.now() > saved.expires) {
+    saved = await tokenRequest({ grant_type: "refresh_token", refresh_token: saved.refresh });
+    log("token_refreshed");
+  }
+  return saved.access;
+}
+
+async function finishSignIn() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("code")) return;
+  await tokenRequest({
+    grant_type: "authorization_code", code: q.get("code"), redirect_uri: REDIRECT,
+    code_verifier: localStorage.getItem("spike_verifier") || "",
+  });
+  history.replaceState(null, "", "/sdk");
+  log("signed_in");
+}
+
+// ---- What this CEF build can do: Widevine + codecs (F3, F5) ----
+
+async function capabilityCheck() {
+  const types = [
+    'audio/mp4; codecs="mp4a.40.2"',
+    'audio/mp4; codecs="flac"',
+    'audio/webm; codecs="vorbis"',
+    'audio/webm; codecs="opus"',
+    'audio/ogg; codecs="vorbis"',
+  ];
+  for (const type of types) {
+    log("mse_type", { type, supported: window.MediaSource ? MediaSource.isTypeSupported(type) : null });
+  }
+  for (const robustness of ["", "SW_SECURE_CRYPTO"]) {
+    try {
+      const access = await navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{
+        initDataTypes: ["cenc", "webm"],
+        audioCapabilities: types.map((contentType) => ({ contentType, robustness })),
+        persistentState: "optional",
+        distinctiveIdentifier: "optional",
+      }]);
+      const caps = access.getConfiguration().audioCapabilities.map((c) => c.contentType);
+      await access.createMediaKeys();
+      log("widevine", { ok: true, robustness, caps });
+    } catch (e) {
+      log("widevine", { ok: false, robustness, error: String(e) });
+    }
+  }
+}
+
+// ---- Player ----
+
+let player = null;
+let deviceId = null;
+
+function summary(s) {
+  if (!s) return { state: null };
+  const cur = s.track_window && s.track_window.current_track;
+  return {
+    uri: cur && cur.uri,
+    paused: s.paused,
+    position: s.position,
+    live: Math.round(live(s)),
+    linked_from: cur && cur.linked_from && cur.linked_from.uri,
+    duration: s.duration,
+    loading: s.loading,
+    prev: (s.track_window.previous_tracks || []).map((t) => t.uri),
+    next: (s.track_window.next_tracks || []).map((t) => t.uri),
+  };
+}
+
+function startPlayer() {
+  player = new Spotify.Player({
+    name: "Mosaic spike",
+    getOAuthToken: async (cb) => { log("need_token"); cb(await token()); },
+    volume: 0.5,
+  });
+  player.addListener("ready", ({ device_id }) => {
+    deviceId = device_id;
+    log("ready", { device_id });
+    for (const id of ["run", "pause", "resume", "seek"]) $(id).disabled = false;
+    if (AUTORUN) runSequence();
+  });
+  player.addListener("not_ready", ({ device_id }) => log("not_ready", { device_id }));
+  for (const ev of ["initialization_error", "authentication_error", "account_error", "playback_error"]) {
+    player.addListener(ev, ({ message }) => log(ev, { message }));
+  }
+  player.addListener("autoplay_failed", () => log("autoplay_failed"));
+  player.addListener("player_state_changed", (s) => log("state", summary(s)));
+  player.connect().then((ok) => log("connect", { ok }));
+}
+
+async function apiPlay(uri, position_ms = 0) {
+  const started = performance.now();
+  const r = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+    method: "PUT",
+    headers: { Authorization: "Bearer " + (await token()), "Content-Type": "application/json" },
+    body: JSON.stringify({ uris: [uri], position_ms }),
+  });
+  log("api_play", { uri, position_ms, status: r.status, ms: Math.round(performance.now() - started),
+    body: r.status >= 300 ? await r.text() : undefined });
+  return started;
+}
+
+/** Polls the player until `pred` holds; returns ms since `since`. */
+async function until(pred, since, timeout = 20000) {
+  while (performance.now() - since < timeout) {
+    const s = await player.getCurrentState();
+    if (s && pred(s)) return Math.round(performance.now() - since);
+    await sleep(25);
+  }
+  throw new Error("timed out");
+}
+
+const current = (s) => s.track_window.current_track && s.track_window.current_track.uri;
+// The SDK's position is a snapshot taken at s.timestamp; while playing, the live position runs on.
+// Spotify relinks tracks to the market's version: the requested URI comes back as linked_from.
+const isTrack = (s, uri) => {
+  const cur = s.track_window.current_track;
+  return !!cur && (cur.uri === uri || (cur.linked_from && cur.linked_from.uri === uri));
+};
+const live = (s) => (s.paused || !s.timestamp ? s.position : s.position + (Date.now() - s.timestamp));
+
+async function measure(name, action, pred, timeout) {
+  try {
+    const since = await action();
+    const ms = await until(pred, since, timeout);
+    log("metric", { name, ms });
+    return ms;
+  } catch (e) {
+    log("metric", { name, error: String(e) });
+    return null;
+  }
+}
+
+async function runSequence() {
+  const uris = $("uris").value.split(",").map((u) => u.trim()).filter(Boolean);
+  if (uris.length < 3) { log("error", { message: "need three track URIs" }); return; }
+  try { await player.activateElement(); } catch (_) { /* only needed on some platforms */ }
+  log("sequence_start", { uris });
+
+  // F4/F5 for real: does a protected track actually play?
+  await measure("time_to_sound_cold", () => apiPlay(uris[0]),
+    (s) => isTrack(s, uris[0]) && !s.paused && !s.loading && live(s) > 200, 30000);
+  await sleep(4000);
+
+  for (const target of [60000, 15000, 120000]) {
+    await measure(`seek_to_${target / 1000}s`, async () => {
+      const since = performance.now();
+      await player.seek(target);
+      return since;
+    }, (s) => Math.abs(live(s) - target) < 1500 && !s.loading);
+    await sleep(2000);
+  }
+
+  await measure("pause", async () => { const t = performance.now(); await player.pause(); return t; },
+    (s) => s.paused);
+  await sleep(1000);
+  await measure("resume", async () => { const t = performance.now(); await player.resume(); return t; },
+    (s) => !s.paused);
+  await sleep(2000);
+
+  for (const [i, uri] of [[1, uris[1]], [2, uris[2]], [3, uris[0]]]) {
+    await measure(`track_change_${i}`, () => apiPlay(uri),
+      (s) => isTrack(s, uri) && !s.paused && !s.loading && live(s) > 200);
+    await sleep(3000);
+  }
+
+  // How does the end of a single-URI play look (design doc 6.3)? Start 6 s before the end and
+  // record every state for 20 s.
+  const s = await player.getCurrentState();
+  if (s && s.duration) {
+    log("end_test_start", { uri: uris[0], duration: s.duration });
+    await apiPlay(uris[0], Math.max(0, s.duration - 6000));
+    const until20 = performance.now() + 20000;
+    let last = "";
+    while (performance.now() < until20) {
+      const st = summary(await player.getCurrentState());
+      const key = JSON.stringify([st.uri, st.paused, st.position === 0]);
+      if (key !== last) { log("end_test_state", st); last = key; }
+      await sleep(200);
+    }
+  }
+  log("sequence_done");
+}
+
+// ---- Wiring ----
+
+$("signin").onclick = signIn;
+$("forget").onclick = async () => { await fetch("/token", { method: "DELETE" }); location.reload(); };
+$("run").onclick = runSequence;
+$("pause").onclick = () => player.pause();
+$("resume").onclick = () => player.resume();
+$("seek").onclick = async () => { const s = await player.getCurrentState(); if (s) player.seek(s.position + 30000); };
+
+(async () => {
+  log("page", { ua: navigator.userAgent, secure: window.isSecureContext });
+  if (CHECK) await capabilityCheck();
+  try { await finishSignIn(); } catch (e) { log("error", { where: "signin", message: String(e) }); }
+  const t = await token().catch((e) => { log("error", { where: "token", message: String(e) }); return null; });
+  if (!t) { log("needs_signin"); return; }
+  const me = await fetch("https://api.spotify.com/v1/me", { headers: { Authorization: "Bearer " + t } });
+  const j = await me.json();
+  $("who").textContent = `Signed in as ${j.display_name || j.id} (${j.product})`;
+  log("me", { product: j.product, scope: (await loadToken() || {}).scope });
+  window.onSpotifyWebPlaybackSDKReady = startPlayer;
+  const sdk = document.createElement("script");
+  sdk.src = "https://sdk.scdn.co/spotify-player.js";
+  sdk.onerror = () => log("error", { where: "sdk", message: "could not load spotify-player.js" });
+  document.head.appendChild(sdk);
+})();
+</script>

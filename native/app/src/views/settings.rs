@@ -660,7 +660,9 @@ impl App {
                 .padding(iced::Padding { bottom: 14.0, ..iced::Padding::ZERO }),
             );
         } else if cfg!(feature = "spotify") {
-            let soloist = !st.soloist_key.trim().is_empty();
+            // Windows and macOS play through the system web view; Soloist is Linux-only.
+            let web_player = cfg!(any(windows, target_os = "macos"));
+            let soloist = !web_player && !st.soloist_key.trim().is_empty();
             if status.premium || soloist {
                 col = col.push(
                     container(tonal_button(
@@ -679,7 +681,11 @@ impl App {
                     }),
                 );
             }
-            col = col.push(self.soloist_settings(p));
+            if web_player {
+                col = col.push(web_player_note(p));
+            } else {
+                col = col.push(self.soloist_settings(p));
+            }
         }
         col.into()
     }
@@ -840,6 +846,29 @@ impl App {
         })
         .into()
     }
+}
+
+/// What Settings says about Spotify playback on Windows and macOS.
+fn web_player_note<'a>(p: Palette) -> Element<'a, Message> {
+    let engine = if cfg!(target_os = "macos") {
+        "the system's web view (WKWebView; experimental, not yet tested on macOS)"
+    } else {
+        "the Microsoft Edge WebView2 runtime that comes with Windows"
+    };
+    column![
+        text("Spotify player").size(16),
+        text(format!(
+            "Spotify tracks play through Spotify's own web player, running hidden in {engine}. It needs Premium. The player starts with the first Spotify track and stops after 10 minutes without one. It plays straight to your speakers, so EQ, leveling, crossfade and the visualizer don't apply to Spotify tracks. If Mosaic asks you to reconnect, disconnect and connect Spotify again above to grant the playback permission."
+        ))
+        .size(13)
+        .color(p.on_surface_variant),
+    ]
+    .spacing(2)
+    .padding(iced::Padding {
+        bottom: 14.0,
+        ..iced::Padding::ZERO
+    })
+    .into()
 }
 
 #[cfg(test)]
