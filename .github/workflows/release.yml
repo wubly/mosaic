@@ -201,5 +201,17 @@ jobs:
           else
             prerelease=()
             [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
-            gh release create "$TAG" dist/* --title "Mosaic $TAG" --generate-notes "${prerelease[@]}"
+            # The release notes are this version's section of native/CHANGELOG.md (from its
+            # "## <version>" heading to the next "## "), or GitHub's generated notes without one.
+            version="${TAG#v}"
+            awk -v v="$version" '
+              /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+              found { print }
+            ' native/CHANGELOG.md > notes.md 2>/dev/null || true
+            if [[ -s notes.md ]]; then
+              notes=(--notes-file notes.md)
+            else
+              notes=(--generate-notes)
+            fi
+            gh release create "$TAG" dist/* --title "Mosaic $TAG" "${notes[@]}" "${prerelease[@]}"
           fi
