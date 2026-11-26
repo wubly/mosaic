@@ -1,6 +1,8 @@
 //! Drives the Soloist backend against a stand-in daemon: a shell script plays the `soloist`
 //! binary (writes the runtime files, stays alive) and the test serves the WebSocket itself.
-#![cfg(all(unix, feature = "spotify"))]
+// Soloist is only used where Spotify doesn't play through the system web view (Linux and other
+// Unixes); on macOS `spotify_playback()` starts the web player instead.
+#![cfg(all(unix, not(target_os = "macos"), feature = "spotify"))]
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
