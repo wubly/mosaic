@@ -73,16 +73,16 @@ pub fn run() -> anyhow::Result<()> {
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
         event_loop.set_activation_policy(ActivationPolicy::Prohibited);
     }
-    let mut window = WindowBuilder::new()
+    let window = WindowBuilder::new()
         .with_title("Mosaic Spotify player")
         .with_inner_size(LogicalSize::new(400.0, 300.0))
         .with_visible(false)
         .with_focused(false);
     #[cfg(windows)]
-    {
+    let window = {
         use tao::platform::windows::WindowBuilderExtWindows;
-        window = window.with_skip_taskbar(true);
-    }
+        window.with_skip_taskbar(true)
+    };
     let window = match window.build(&event_loop) {
         Ok(w) => w,
         Err(e) => {
