@@ -1,4 +1,5 @@
 pub mod autoplay;
+pub mod catalog;
 pub mod discord;
 pub mod http;
 pub mod images;

@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::Services;
 
+mod catalog;
 mod radio;
 pub use radio::{best_match, core_title};
 

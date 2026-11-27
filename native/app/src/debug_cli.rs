@@ -355,7 +355,21 @@ async fn queue_play(
                     Err(e) => println!("resolve failed: {e}"),
                 }
             }
-            PlayerInput::Related { .. } => outstanding = outstanding.saturating_sub(1),
+            PlayerInput::Related { result, .. } => {
+                outstanding = outstanding.saturating_sub(1);
+                match result {
+                    Ok(list) => println!(
+                        "autoplay: {} tracks: {}",
+                        list.len(),
+                        list.iter()
+                            .take(5)
+                            .map(|t| format!("{} - {}", t.artist, t.title))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ),
+                    Err(e) => println!("autoplay failed: {e}"),
+                }
+            }
             PlayerInput::Engine(mosaic_audio::Event::Position { secs, .. })
                 if secs - last_print >= 1.0 =>
             {
@@ -382,6 +396,7 @@ async fn queue_play(
                     });
                 }
                 Effect::FetchRelated { seed, purpose } => {
+                    println!("autoplay: fetching for {} - {}", seed.artist, seed.title);
                     outstanding += 1;
                     done = false;
                     let (services, tx) = (services.clone(), tx.clone());
