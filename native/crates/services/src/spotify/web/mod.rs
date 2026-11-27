@@ -32,16 +32,22 @@ use self::tracker::{Action, PlayerState, Tracker};
 use super::playback::{Target, NEEDS_PREMIUM};
 use crate::Services;
 
-pub const NOT_CONNECTED: &str = "Connect Spotify in Settings \u{2192} Beta to play Spotify tracks";
-pub const NOT_STREAMING: &str = "Reconnect Spotify in Settings \u{2192} Beta: playing in Mosaic needs a permission your sign-in doesn't have yet";
+pub const NOT_CONNECTED: &str = "Connect Spotify in the Spotify tab to play Spotify tracks";
+pub const NOT_STREAMING: &str =
+    "Reconnect Spotify in the Spotify tab: playback needs a permission your current sign-in is missing";
 const NOT_STARTED: &str = "Spotify's player didn't start";
 const STOPPED: &str = "Spotify's player stopped unexpectedly";
 const TRACK_TIMEOUT: &str = "Spotify didn't start this track";
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
-/// Without a Spotify track loaded for this long, the host is stopped to free its memory.
-const IDLE_SHUTDOWN: Duration = Duration::from_secs(10 * 60);
+/// Without a Spotify track loaded for this long, the host is stopped to free its memory
+/// (WebView2 holds about 170 MB even idle). Starting it again takes about a second.
+const IDLE_SHUTDOWN: Duration = Duration::from_secs(45);
+/// How often the idle check runs.
+const IDLE_CHECK: Duration = Duration::from_secs(10);
+/// How often Spotify's up-next list is asked for while it's being shown or followed.
+const QUEUE_REFRESH: Duration = Duration::from_secs(5);
 /// Interleaved stereo f32 at the push source's 44.1 kHz: about 46 ms per chunk.
 const CHUNK_FRAMES: usize = 2048;
 const RATE: f64 = 44_100.0;
@@ -116,7 +122,16 @@ impl WebPlayer {
         engine.into()
     }
 
-    pub fn load(&self, uri: &str, position_ms: u32, target: Target) -> Result<()> {
+    /// Starts `uri`. While Spotify leads the queue (nothing of Mosaic's own follows), the track
+    /// plays inside `context` so Spotify carries on from it by itself, and a track Spotify has
+    /// already moved on to is taken over where it is instead of restarted.
+    pub fn load(
+        &self,
+        uri: &str,
+        context: Option<&str>,
+        position_ms: u32,
+        target: Target,
+    ) -> Result<()> {
         if !self.alive() {
             bail!(STOPPED);
         }
@@ -127,10 +142,28 @@ impl WebPlayer {
             .ok()
             .and_then(|d| d.clone())
             .ok_or_else(|| anyhow!("{NOT_STARTED}: no device yet"))?;
+        let leads = self.shared.services.spotify_leads();
+        let adopt = leads
+            && position_ms < 2_000
+            && self.with(|t| t.already_playing(uri)).unwrap_or(false);
         let gen = self
-            .with(|t| t.begin(uri, position_ms, target))
+            .with(|t| {
+                let gen = t.begin(uri, position_ms, target);
+                if adopt {
+                    if let Some(last) = t.last.clone() {
+                        t.on_state(&last);
+                    }
+                }
+                gen
+            })
             .ok_or_else(|| anyhow!(STOPPED))?;
         self.touch();
+        if adopt {
+            tracing::debug!("spotify web: following Spotify onto {uri}");
+            self.spawn_feeder(gen);
+            return Ok(());
+        }
+        let context = if leads { context.map(str::to_string) } else { None };
         if let Some(v) = self.with(|t| t.volume).flatten() {
             self.send(json!({ "type": "volume", "value": v }));
         }
@@ -139,7 +172,10 @@ impl WebPlayer {
         let me = self.clone();
         let uri = uri.to_string();
         tokio::spawn(async move {
-            if let Err(e) = me.start_track(&device, &uri, position_ms).await {
+            if let Err(e) = me
+                .start_track(&device, &uri, context.as_deref(), position_ms)
+                .await
+            {
                 me.fail_if_current(gen, e.to_string());
             }
         });
@@ -155,10 +191,24 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Asks Spotify to play exactly this track on our device (Mosaic keeps its own queue). The
-    /// device can take a moment to be known server-side after `ready`, hence the retries.
-    async fn start_track(&self, device: &str, uri: &str, position_ms: u32) -> Result<()> {
-        let body = json!({ "uris": [uri], "position_ms": position_ms });
+    /// Asks Spotify to play this track on our device: alone when Mosaic's queue decides what's
+    /// next, or inside `context` (from the track) when Spotify does. The device can take a
+    /// moment to be known server-side after `ready`, hence the retries.
+    async fn start_track(
+        &self,
+        device: &str,
+        uri: &str,
+        context: Option<&str>,
+        position_ms: u32,
+    ) -> Result<()> {
+        let body = match context {
+            Some(c) => json!({
+                "context_uri": c,
+                "offset": { "uri": uri },
+                "position_ms": position_ms,
+            }),
+            None => json!({ "uris": [uri], "position_ms": position_ms }),
+        };
         let mut last = None;
         for attempt in 0..4 {
             if attempt > 0 {
@@ -248,6 +298,58 @@ impl WebPlayer {
                         }
                     }
                 }
+            }
+        });
+    }
+
+    /// Spotify's up-next list and the track it's for, as last fetched; asks for a fresh one
+    /// when it's stale. Empty until the first answer.
+    pub fn queue(&self) -> (Option<String>, Vec<mosaic_core::model::Track>) {
+        let stale = self
+            .with(|t| {
+                let stale = t.queue_asked.is_none_or(|at| at.elapsed() >= QUEUE_REFRESH);
+                if stale {
+                    t.queue_asked = Some(Instant::now());
+                }
+                stale
+            })
+            .unwrap_or(false);
+        if stale {
+            let me = self.clone();
+            tokio::spawn(async move {
+                match me.shared.services.spotify_api("/me/player/queue", &[]).await {
+                    Ok(json) => {
+                        let playing = json["currently_playing"]["uri"]
+                            .as_str()
+                            .map(str::to_string);
+                        let tracks = super::web_api::usable(super::web_api::items(&json["queue"]));
+                        me.with(|t| t.queue = (playing, tracks));
+                    }
+                    Err(e) => tracing::debug!("spotify web: no queue: {e}"),
+                }
+            });
+        }
+        self.with(|t| t.queue.clone()).unwrap_or_default()
+    }
+
+    /// Skips to Spotify's own next track (its queue or autoplay); the tracker then follows.
+    pub fn skip_next(&self) {
+        let Some(device) = self.shared.device.lock().ok().and_then(|d| d.clone()) else {
+            return;
+        };
+        self.touch();
+        let services = self.shared.services.clone();
+        tokio::spawn(async move {
+            if let Err(e) = services
+                .spotify_send(
+                    reqwest::Method::POST,
+                    "/me/player/next",
+                    &[("device_id", device)],
+                    None,
+                )
+                .await
+            {
+                tracing::warn!("spotify web: skip failed: {e}");
             }
         });
     }
@@ -346,10 +448,17 @@ impl WebPlayer {
                 }
                 match self.with(|t| t.on_state(&st)).unwrap_or(Action::None) {
                     Action::Finish => {
+                        let moved = self.with(|t| t.moved_to()).flatten();
                         if let Some(target) = self.with(Tracker::clear).flatten() {
-                            // Spotify may carry on with recommendations; Mosaic plays its own
-                            // next track, so hold Spotify until then.
-                            self.send(json!({ "type": "pause" }));
+                            match moved {
+                                // Spotify carried on with its own queue or autoplay: Mosaic
+                                // follows it (and adopts the track where it is).
+                                Some(to) if self.shared.services.spotify_leads() => {
+                                    (target.moved)(to);
+                                }
+                                // Mosaic plays its own next track; hold Spotify until then.
+                                _ => self.send(json!({ "type": "pause" })),
+                            }
                             (target.finish)();
                         }
                     }
@@ -559,7 +668,7 @@ impl Services {
         let idle = player.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                tokio::time::sleep(IDLE_CHECK).await;
                 if !idle.alive() {
                     break;
                 }

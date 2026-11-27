@@ -6,7 +6,7 @@ use mosaic_services::update::{self, UpdateState};
 
 use super::common::{page, primary_button, tonal_button};
 use crate::app::{App, Message};
-use crate::player::PlayerInput;
+
 use crate::theme::{styles, Palette};
 use crate::widgets::icon::Icon;
 use crate::widgets::switch::switch;
@@ -35,6 +35,11 @@ pub enum Msg {
     CheckUpdate,
     Updated(Box<UpdateState>),
     OpenUpdate,
+    AutoUpdate(bool),
+    /// Download the update if needed, then install it and restart.
+    InstallUpdate,
+    /// The download finished; `true` installs right away.
+    Downloaded(Result<std::path::PathBuf, String>, bool),
     Autoplay(bool),
     Crossfade(f32),
     FadePause(bool),
@@ -43,7 +48,6 @@ pub enum Msg {
     Lyrics(bool),
     CloseToTray(bool),
     Presence(bool),
-    Beta(bool),
     PlaybackLogin,
     PlaybackReady(Result<String, String>),
     SoloistPath(String),
@@ -70,18 +74,88 @@ impl App {
         )
     }
 
+    fn download_update(&mut self, install: bool) -> Task<Message> {
+        let Some(asset) = self.ui.update.asset.clone() else {
+            return self.update(Message::Settings(Msg::OpenUpdate));
+        };
+        if self.ui.update_busy {
+            return Task::none();
+        }
+        self.ui.update_busy = true;
+        let http = self.services.http().clone();
+        let dir = std::env::temp_dir().join("mosaic-update");
+        Task::perform(
+            async move {
+                update::download(&http, &asset, &dir, |_, _| {})
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |r| Message::Settings(Msg::Downloaded(r, install)),
+        )
+    }
+
+    /// Hands over to the installer, which waits for Mosaic to quit and starts it again.
+    fn install_update(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        match update::install_and_restart(&path) {
+            Ok(()) => iced::exit(),
+            Err(update::InstallError::OpenReleasePage) => {
+                self.update(Message::Settings(Msg::OpenUpdate))
+            }
+            Err(update::InstallError::Failed(e)) => {
+                self.toast(format!("Couldn’t install the update: {e}"));
+                Task::none()
+            }
+        }
+    }
+
     pub(crate) fn on_settings(&mut self, msg: Msg) -> Task<Message> {
         match msg {
             Msg::CheckUpdate => self.check_update(),
             Msg::Updated(u) => {
                 self.ui.checking_update = false;
                 let announce = u.available && !self.ui.update.available;
+                if u.latest != self.ui.update.latest {
+                    self.ui.update_file = None;
+                }
                 self.ui.update = *u;
+                let auto = self.services.config().auto_update == Some(true)
+                    && update::can_self_update();
+                if announce && auto {
+                    return self.download_update(false);
+                }
                 if announce {
                     let latest = self.ui.update.latest.clone().unwrap_or_default();
                     self.toast(format!(
                         "Mosaic {latest} is ready. Open Settings to update."
                     ));
+                }
+                Task::none()
+            }
+            Msg::AutoUpdate(v) => {
+                self.services.update_config(|c| c.auto_update = Some(v));
+                if v && self.ui.update.available && self.ui.update_file.is_none() {
+                    return self.download_update(false);
+                }
+                Task::none()
+            }
+            Msg::InstallUpdate => match self.ui.update_file.clone() {
+                Some(path) => self.install_update(path),
+                None => self.download_update(true),
+            },
+            Msg::Downloaded(result, install) => {
+                self.ui.update_busy = false;
+                match result {
+                    Ok(path) => {
+                        self.ui.update_file = Some(path.clone());
+                        if install {
+                            return self.install_update(path);
+                        }
+                        let latest = self.ui.update.latest.clone().unwrap_or_default();
+                        self.toast(format!(
+                            "Mosaic {latest} is downloaded. Restart to update from Settings."
+                        ));
+                    }
+                    Err(e) => self.toast(format!("Couldn’t download the update: {e}")),
                 }
                 Task::none()
             }
@@ -105,10 +179,6 @@ impl App {
                 Task::none()
             }
             Msg::Presence(v) => self.set_setting(|s| s.presence = v),
-            Msg::Beta(v) => {
-                self.services.update_config(|c| c.beta = Some(v));
-                Task::batch([self.spotify_boot_or_clear(), self.youtube_boot_or_clear()])
-            }
             Msg::PlaybackLogin => self.playback_login(),
             Msg::PlaybackReady(result) => {
                 self.toast(match result {
@@ -210,23 +280,6 @@ impl App {
         Task::none()
     }
 
-    fn spotify_boot_or_clear(&mut self) -> Task<Message> {
-        if self.services.config().beta == Some(true) {
-            self.spotify_boot()
-        } else {
-            self.ui.spotify.status = Default::default();
-            self.ui.spotify.saved.clear();
-            Task::batch([
-                self.player_input(PlayerInput::SpotifyAvailable(false)),
-                if self.view_kind() == crate::widgets::rail::View::Spotify {
-                    self.update(Message::Nav(crate::widgets::rail::View::Discover))
-                } else {
-                    Task::none()
-                },
-            ])
-        }
-    }
-
     fn switch_row<'a>(
         &self,
         title: &str,
@@ -252,7 +305,7 @@ impl App {
         .into()
     }
 
-    fn settings_card<'a>(
+    pub(crate) fn settings_card<'a>(
         &self,
         rows: Vec<Element<'a, Message>>,
         p: Palette,
@@ -301,7 +354,11 @@ impl App {
             let (title, hint) = if u.available {
                 (
                     format!("Mosaic {} is ready", u.latest.clone().unwrap_or_default()),
-                    format!("You’re on {}. The new version is a download away; nothing is installed automatically.", u.current),
+                    if self.ui.update_file.is_some() {
+                        format!("You’re on {}. Downloaded and ready: Mosaic restarts to finish.", u.current)
+                    } else {
+                        format!("You’re on {}.", u.current)
+                    },
                 )
             } else {
                 let current = if u.current.is_empty() {
@@ -318,9 +375,22 @@ impl App {
                     },
                 )
             };
-            let action: Element<'_, Message> = if u.available {
+            let action: Element<'_, Message> = if u.available && update::can_self_update() && u.asset.is_some() {
                 primary_button(
-                    "Update",
+                    if self.ui.update_busy {
+                        "Downloading…"
+                    } else if self.ui.update_file.is_some() {
+                        "Restart to update"
+                    } else {
+                        "Update now"
+                    },
+                    Icon::CloudDownload,
+                    p,
+                    Message::Settings(Msg::InstallUpdate),
+                )
+            } else if u.available {
+                primary_button(
+                    "Get update",
                     Icon::OpenInNew,
                     p,
                     Message::Settings(Msg::OpenUpdate),
@@ -392,7 +462,7 @@ impl App {
         };
         let playback = self.settings_card(
             vec![
-                self.switch_row("Autoplay similar tracks", "When your queue ends, keep going with tracks SoundCloud thinks you’ll like.".into(), s.autoplay, Msg::Autoplay, p),
+                self.switch_row("Autoplay similar tracks", "Keep the queue going with songs in the style of what’s playing. They show up in the queue right away, so you can change them first. Spotify tracks follow Spotify’s own queue.".into(), s.autoplay, Msg::Autoplay, p),
                 crossfade.into(),
                 self.switch_row("Fade on pause and resume", "Ease the volume instead of cutting it off.".into(), s.fade_pause, Msg::FadePause, p),
                 self.switch_row("Skip silence at start and end", "Jump past long silent intros and outros, like the blank first minute some SoundCloud uploads use to dodge copyright. Never touches the middle of a song.".into(), s.skip_silence, Msg::SkipSilence, p),
@@ -429,20 +499,6 @@ impl App {
             )
         };
 
-        let beta = {
-            let mut rows = vec![self.switch_row(
-                "Beta features",
-                "Early features that may be rough or break. Turn this on to see them below.".into(),
-                config.beta == Some(true),
-                Msg::Beta,
-                p,
-            )];
-            if config.beta == Some(true) {
-                rows.push(self.spotify_settings(p));
-                rows.push(self.youtube_settings(p));
-            }
-            self.settings_card(rows, p)
-        };
 
         let library = self.settings_card(
             vec![container(
@@ -516,11 +572,30 @@ impl App {
         );
 
         let groups = [
-            self.group("Updates", self.settings_card(vec![update_row], p), p),
+            self.group(
+                "Updates",
+                self.settings_card(
+                    if update::can_self_update() {
+                        vec![
+                            update_row,
+                            self.switch_row(
+                                "Download updates automatically",
+                                "New versions download in the background. Installing waits for you to say so.".into(),
+                                config.auto_update == Some(true),
+                                Msg::AutoUpdate,
+                                p,
+                            ),
+                        ]
+                    } else {
+                        vec![update_row]
+                    },
+                    p,
+                ),
+                p,
+            ),
             self.group("Playback", playback, p),
             self.group("Discord", discord, p),
             self.group("Library", library, p),
-            self.group("Beta", beta, p),
             self.group(
                 "Keyboard shortcuts",
                 self.settings_card(vec![keys.into()], p),
@@ -552,22 +627,22 @@ impl App {
         page(body, p)
     }
 
-    fn spotify_settings(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn spotify_settings(&self, p: Palette) -> Element<'_, Message> {
         use super::spotify::Msg as Sp;
         let st = &self.ui.spotify;
         let status = &st.status;
         let hint = if status.connected {
             format!(
-                "Connected as {}{}",
+                "Connected as {}.{}",
                 status.user.clone().unwrap_or_default(),
                 if status.premium {
                     ""
                 } else {
-                    ". Playing inside Mosaic needs Spotify Premium."
+                    " Playing needs Premium."
                 }
             )
         } else {
-            "Search and browse Spotify, import playlists, and (with Premium) play tracks inside Mosaic. Needs your own client ID.".into()
+            "Search, browse and play Spotify here. Playing needs Premium.".into()
         };
         let action: Element<'_, Message> = if status.connected {
             row![
@@ -576,7 +651,7 @@ impl App {
                         text(if st.importing {
                             "Importing…"
                         } else {
-                            "Import everything"
+                            "Import library"
                         })
                         .size(14)
                     )
@@ -652,7 +727,7 @@ impl App {
                     )
                     .height(44)
                     .center_y(44),
-                    text("Make an app at developer.spotify.com/dashboard, add http://127.0.0.1:8898/callback as a redirect URI, then paste the client ID here.")
+                    text("Spotify needs an app of your own: create one at developer.spotify.com/dashboard, add http://127.0.0.1:8898/callback as its redirect URI, and paste its client ID here.")
                         .size(12)
                         .color(p.on_surface_variant),
                 ]
@@ -669,7 +744,7 @@ impl App {
                         if soloist {
                             "Start Spotify Soloist"
                         } else {
-                            "Enable playback (Premium)"
+                            "Test playback"
                         },
                         Icon::PlayArrow,
                         p,
@@ -690,17 +765,17 @@ impl App {
         col.into()
     }
 
-    fn youtube_settings(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn youtube_settings(&self, p: Palette) -> Element<'_, Message> {
         use super::youtube::Msg as Yt;
         let st = &self.ui.youtube;
         let status = &st.status;
         let hint = if status.connected {
             format!(
-                "Connected as {}. Your liked videos and playlists are in the YouTube tab.",
+                "Connected as {} with your own Google client.",
                 status.user.clone().unwrap_or_default()
             )
         } else {
-            "YouTube plays, searches YouTube Music in Discover, and fills the queue with similar songs without signing in. Connect a Google account to also browse your liked videos and playlists. Needs your own Google OAuth client.".into()
+            "For developers: browse liked videos with your own Google Cloud OAuth client.".into()
         };
         let action: Element<'_, Message> = if status.connected {
             tonal_button(
@@ -728,7 +803,7 @@ impl App {
         let mut col = column![container(
             row![
                 column![
-                    text("YouTube").size(16),
+                    text("Own Google client (advanced)").size(16),
                     text(hint).size(13).color(p.on_surface_variant)
                 ]
                 .spacing(2)

@@ -322,6 +322,9 @@ pub struct Config {
     pub genius: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beta: Option<bool>,
+    /// Download new versions in the background, ready to install with one click.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spotify_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

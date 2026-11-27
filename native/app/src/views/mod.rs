@@ -7,6 +7,7 @@ pub mod lyrics;
 pub mod now_playing;
 pub mod onboarding;
 pub mod palette;
+pub mod platform;
 pub mod player_bar;
 pub mod queue;
 pub mod reorder;

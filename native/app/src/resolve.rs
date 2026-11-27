@@ -91,7 +91,12 @@ async fn spotify(services: &Services, track: &Track, seek_to: f64) -> Result<Str
         }),
     };
     playback
-        .load(&uri, (seek_to.max(0.0) * 1000.0) as u32, target)
+        .load(
+            &uri,
+            track.album_id.as_ref().map(|id| format!("spotify:album:{id}")).as_deref(),
+            (seek_to.max(0.0) * 1000.0) as u32,
+            target,
+        )
         .map_err(|e| e.to_string())?;
     Ok(Stream {
         source: SourceSpec::Push(handle),

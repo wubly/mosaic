@@ -162,6 +162,21 @@ impl Services {
     /// Spotify answers `/search` with "Invalid limit" above 10 results per type.
     pub const SEARCH_LIMIT: u32 = 10;
 
+    /// Tracks only: a lighter search for matching songs found elsewhere.
+    pub async fn spotify_find_tracks(&self, q: &str, limit: u32) -> Result<Vec<Track>> {
+        let json = self
+            .spotify_api(
+                "/search",
+                &[
+                    ("q", q.into()),
+                    ("type", "track".into()),
+                    ("limit", limit.clamp(1, Self::SEARCH_LIMIT).to_string()),
+                ],
+            )
+            .await?;
+        Ok(usable(items(&json["tracks"]["items"])))
+    }
+
     pub async fn spotify_search(&self, q: &str, limit: u32) -> Result<SearchResults> {
         let limit = limit.clamp(1, Self::SEARCH_LIMIT);
         let json = self

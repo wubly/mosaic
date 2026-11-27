@@ -230,7 +230,9 @@ pub fn order(query: &str, hits: &[Hit], trust: f64) -> Vec<usize> {
             .count();
         score -= (extra as f64 * 0.08).min(1.0);
         if hit.plays > 0 {
-            score += 0.5 * ((hit.plays as f64 + 1.0).log10() / 7.0).min(1.0);
+            // 1K plays is nothing, 1B is a hit: a cover with 21K plays trails the original with
+            // 3.7B by about what a place or two in the services' own order is worth.
+            score += 1.2 * (((hit.plays as f64).log10() - 3.0) / 6.5).clamp(0.0, 1.0);
         }
         if hit.verified {
             score += 0.4;

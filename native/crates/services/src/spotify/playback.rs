@@ -57,7 +57,7 @@ pub const UNAVAILABLE: &str = "This track isn't available on Spotify in your reg
 pub const NEEDS_PREMIUM: &str = "Spotify playback needs Premium";
 /// Spotify only hands librespot decryption keys to accounts that have recently used a legacy
 /// (eSDK v1) device; newer accounts are refused for every track (librespot issue #1649).
-pub const KEY_REFUSED: &str = "Spotify refused this account a playback key (newer accounts can't play through librespot). Set up Spotify Soloist in Settings \u{2192} Beta to play Spotify tracks";
+pub const KEY_REFUSED: &str = "Spotify refused this account a playback key (newer accounts can't play through librespot). Set up Spotify Soloist in the Spotify tab to play Spotify tracks";
 
 /// Where decoded audio goes: interleaved stereo f32 at 44.1 kHz.
 #[derive(Clone)]
@@ -112,11 +112,19 @@ pub const USES_WEB_PLAYER: bool = cfg!(any(windows, target_os = "macos"));
 
 impl SpotifyPlayback {
     /// Starts `uri` at `position_ms`; audio (or, for Soloist, a silent clock) goes to `target`.
-    pub fn load(&self, uri: &str, position_ms: u32, target: Target) -> Result<()> {
+    /// `context` (an album or playlist URI holding the track) lets the web player hand what
+    /// follows to Spotify.
+    pub fn load(
+        &self,
+        uri: &str,
+        context: Option<&str>,
+        position_ms: u32,
+        target: Target,
+    ) -> Result<()> {
         match self {
             Self::Librespot(l) => l.load(uri, position_ms, target),
             Self::Soloist(s) => s.load(uri, position_ms, target),
-            Self::Web(w) => w.load(uri, position_ms, target),
+            Self::Web(w) => w.load(uri, context, position_ms, target),
         }
     }
 
@@ -166,17 +174,22 @@ impl SpotifyPlayback {
     /// librespot.
     pub fn queue(&self) -> (Option<String>, Vec<mosaic_core::model::Track>) {
         match self {
-            Self::Librespot(_) | Self::Web(_) => (None, Vec::new()),
+            Self::Librespot(_) => (None, Vec::new()),
             Self::Soloist(s) => s.queue(),
+            Self::Web(w) => w.queue(),
         }
     }
 
     /// Asks Spotify to skip to its own next track; returns false where that isn't possible.
     pub fn skip_next(&self) -> bool {
         match self {
-            Self::Librespot(_) | Self::Web(_) => false,
+            Self::Librespot(_) => false,
             Self::Soloist(s) => {
                 s.skip_next();
+                true
+            }
+            Self::Web(w) => {
+                w.skip_next();
                 true
             }
         }

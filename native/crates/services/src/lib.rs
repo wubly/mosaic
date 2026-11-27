@@ -1,3 +1,4 @@
+pub mod autoplay;
 pub mod discord;
 pub mod http;
 pub mod images;
@@ -28,6 +29,9 @@ pub(crate) struct Inner {
     pub images: images::State,
     pub spotify: spotify::auth::State,
     pub youtube: youtube::auth::State,
+    /// Whether Spotify decides what plays after the current Spotify track (nothing of Mosaic's
+    /// own follows it). See `Services::set_spotify_leads`.
+    pub spotify_leads: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -53,8 +57,23 @@ impl Services {
                 local_paths: Mutex::default(),
                 lyrics: lyrics::State::default(),
                 images: images::State::new(),
+                spotify_leads: Default::default(),
             }),
         })
+    }
+
+    /// Set by the app whenever the queue changes: true while nothing of Mosaic's own follows
+    /// the playing Spotify track, so Spotify's queue and autoplay carry on from it.
+    pub fn set_spotify_leads(&self, on: bool) {
+        self.inner
+            .spotify_leads
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn spotify_leads(&self) -> bool {
+        self.inner
+            .spotify_leads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn dirs(&self) -> &Dirs {

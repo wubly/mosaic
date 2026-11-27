@@ -42,7 +42,7 @@ impl PlayerController {
             track: track.clone(),
             gen: self.gen,
             seek_to: opts.seek_to,
-        });
+        });        self.top_up_autoplay(fx);
     }
 
     pub(super) fn on_stream(

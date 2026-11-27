@@ -11,7 +11,7 @@ use crate::player::PlayerInput;
 use crate::theme::{styles, Palette};
 use crate::widgets::icon::{icon, outlined, Icon};
 use crate::widgets::spinner::spinner;
-use crate::widgets::wavy_slider::{flat_slider, wavy_slider, WAVELENGTH};
+use crate::widgets::wavy_slider::{flat_slider, wavy_slider};
 
 fn tip<'a>(
     content: impl Into<Element<'a, Message>>,
@@ -333,6 +333,11 @@ impl App {
         self.controls(p, false)
     }
 
+    /// The mini player's transport and seek wave, sized for its card.
+    pub(crate) fn mini_controls(&self, p: Palette) -> Element<'_, Message> {
+        self.controls(p, true)
+    }
+
     fn controls(&self, p: Palette, compact: bool) -> Element<'_, Message> {
         let s = self.settings();
         let pl = &self.player;
@@ -432,12 +437,21 @@ impl App {
             0.0
         };
         let amp = self.anim.value("seek-amp", 1.0);
-        let phase = self.now.saturating_duration_since(self.epoch).as_secs_f32() * WAVELENGTH;
+        let moving = self.player.playing && !self.player.loading && duration > 0.0;
+        let motion = Some(crate::widgets::wavy_slider::Motion {
+            at: self.now,
+            rate: if moving {
+                (self.settings().speed / duration) as f32
+            } else {
+                0.0
+            },
+            epoch: self.epoch,
+        });
         let seek = row![
             container(text(fmt_secs(current)).size(12).style(styles::muted(p)))
                 .width(36)
                 .align_x(iced::alignment::Horizontal::Right),
-            wavy_slider(fraction, amp, phase, p, Message::SeekFraction),
+            wavy_slider(fraction, amp, motion, p, Message::SeekFraction),
             container(text(fmt_secs(duration)).size(12).style(styles::muted(p))).width(36),
         ]
         .spacing(12)

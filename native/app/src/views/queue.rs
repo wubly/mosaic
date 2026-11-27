@@ -13,6 +13,13 @@ use crate::widgets::icon::Icon;
 
 const WINDOW: usize = 150;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Queue,
+    Autoplay,
+    Spotify,
+}
+
 #[derive(Clone, Debug)]
 pub enum Msg {
     Clear,
@@ -79,9 +86,41 @@ impl App {
             );
         }
         let mut rows = column![].spacing(6);
+        let mut section = Section::Queue;
         for (pos, src) in order.into_iter().enumerate() {
             let t = &shown[src];
             let abs = begin + src;
+            // Tracks autoplay (or Spotify) added get their own heading, once, where they start.
+            let here = if abs as isize <= q.index {
+                Section::Queue
+            } else if self.player.auto_tail.contains(&t.id) {
+                Section::Autoplay
+            } else if self.player.spotify_tail().contains(&t.id) {
+                Section::Spotify
+            } else {
+                Section::Queue
+            };
+            if here != section && here != Section::Queue {
+                let (title, sub) = match here {
+                    Section::Autoplay => ("Autoplay", "Picked to follow what's playing. Remove or reorder anything."),
+                    _ => ("Up next on Spotify", "Spotify's own queue and autoplay"),
+                };
+                rows = rows.push(
+                    container(
+                        column![
+                            text(title).size(16).color(p.on_surface),
+                            text(sub).size(12).color(p.on_surface_variant),
+                        ]
+                        .spacing(2),
+                    )
+                    .padding(iced::Padding {
+                        top: 18.0,
+                        bottom: 6.0,
+                        ..iced::Padding::ZERO
+                    }),
+                );
+            }
+            section = here;
             let active = abs as isize == q.index;
             let trailing = if active {
                 self.placeholder_button()

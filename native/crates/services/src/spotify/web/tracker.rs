@@ -55,6 +55,11 @@ pub struct Tracker {
     /// Where the silent feed is, in track seconds.
     pub fed: f64,
     pub volume: Option<f64>,
+    /// The page's latest report, whichever track it was about.
+    pub last: Option<PlayerState>,
+    /// Spotify's up-next list, the track it's for and when it was last asked for.
+    pub queue: (Option<String>, Vec<mosaic_core::model::Track>),
+    pub queue_asked: Option<Instant>,
 }
 
 impl Default for Tracker {
@@ -70,6 +75,9 @@ impl Default for Tracker {
             anchor_at: Instant::now(),
             fed: 0.0,
             volume: None,
+            last: None,
+            queue: (None, Vec::new()),
+            queue_asked: None,
         }
     }
 }
@@ -139,8 +147,28 @@ impl Tracker {
         }
     }
 
+    /// Whether Spotify is already playing `uri` (it moved on to it by itself), so a load can
+    /// take it over where it is instead of restarting it.
+    pub fn already_playing(&self, uri: &str) -> bool {
+        self.last.as_ref().is_some_and(|st| {
+            !st.paused
+                && (st.uri.as_deref() == Some(uri) || st.linked_from.as_deref() == Some(uri))
+        })
+    }
+
+    /// The track Spotify reported last, when it isn't the one Mosaic asked for.
+    pub fn moved_to(&self) -> Option<String> {
+        let st = self.last.as_ref()?;
+        let uri = st.uri.clone()?;
+        let want = self.want.as_deref();
+        (Some(uri.as_str()) != want && st.linked_from.as_deref() != want).then_some(uri)
+    }
+
     /// Folds one `state` message in and says what to do about it.
     pub fn on_state(&mut self, st: &PlayerState) -> Action {
+        if st.uri.is_some() {
+            self.last = Some(st.clone());
+        }
         if self.want.is_none() {
             return Action::None;
         }

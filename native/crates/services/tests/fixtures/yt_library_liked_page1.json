@@ -1,0 +1,15 @@
+{"contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[{"musicShelfRenderer":{"contents":[
+{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"sWcLccMuCA8"},"thumbnail":{"musicThumbnailRenderer":{"thumbnail":{"thumbnails":[{"url":"https://lh3.googleusercontent.com/a=w60-h60-l90-rj"},{"url":"https://lh3.googleusercontent.com/a=w120-h120-l90-rj"}]}}},
+"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Xtal","navigationEndpoint":{"watchEndpoint":{"videoId":"sWcLccMuCA8"}}}]}}},
+{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Aphex Twin","navigationEndpoint":{"browseEndpoint":{"browseId":"UCqzXGgtNXPUG0nR3tjfQmTg"}}}]}}},
+{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Selected Ambient Works 85-92","navigationEndpoint":{"browseEndpoint":{"browseId":"MPREb_x"}}}]}}}],
+"fixedColumns":[{"musicResponsiveListItemFixedColumnRenderer":{"text":{"runs":[{"text":"4:54"}]}}}]}},
+{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"q6sQeUkyWPc"},"thumbnail":{"musicThumbnailRenderer":{"thumbnail":{"thumbnails":[{"url":"https://lh3.googleusercontent.com/b=w120-h120-l90-rj"}]}}},
+"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Evil at Play"}]}}},
+{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Steven Jeffries"},{"text":" & "},{"text":"Mary Carewe"}]}}},
+{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Glistens"}]}}}],
+"fixedColumns":[{"musicResponsiveListItemFixedColumnRenderer":{"text":{"runs":[{"text":"1:09:05"}]}}}]}},
+{"musicResponsiveListItemRenderer":{"musicItemRendererDisplayPolicy":"MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT",
+"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Deleted video"}]}}},
+{"musicResponsiveListItemFlexColumnRenderer":{"text":{}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{}}}]}}
+],"continuations":[{"nextContinuationData":{"continuation":"TOKEN_PAGE_2","clickTrackingParams":"x"}}]}}]}}}}]}}}

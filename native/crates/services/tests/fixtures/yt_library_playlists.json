@@ -1,0 +1,6 @@
+{"contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[{"gridRenderer":{"items":[
+{"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"New playlist"}]},"navigationEndpoint":{"createPlaylistServiceEndpoint":{}}}},
+{"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"Your Likes"}]},"navigationEndpoint":{"browseEndpoint":{"browseId":"VLLM"}}}},
+{"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"Chill"}]},"navigationEndpoint":{"browseEndpoint":{"browseId":"VLPLchill"}}}},
+{"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"Gym"}]},"navigationEndpoint":{"browseEndpoint":{"browseId":"VLPLgym"}}}}
+],"continuations":[{"nextContinuationData":{"continuation":"GRID_TOKEN_2"}}]}}]}}}}]}}}

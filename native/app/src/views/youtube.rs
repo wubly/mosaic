@@ -5,7 +5,8 @@ use iced::widget::{column, container, image, opaque, row, text, Space};
 use iced::{Alignment, Element, Length, Task};
 use mosaic_core::model::Track;
 use mosaic_services::youtube::api::{Library, PlaylistCard};
-use mosaic_services::youtube::auth::Status;
+use mosaic_services::youtube::auth::{Account, Status};
+use mosaic_services::youtube::library::YtLibrary;
 use mosaic_services::youtube::innertube::VideoStream;
 use rand::seq::SliceRandom;
 
@@ -23,6 +24,13 @@ use crate::widgets::spinner::spinner;
 
 #[derive(Clone, Debug)]
 pub enum Msg {
+    /// Open the Google sign-in window.
+    GoogleSignIn,
+    GoogleSignedIn(Result<Option<Account>, String>),
+    GoogleSignOut,
+    /// Copy the signed-in account's likes and playlists into Mosaic's library.
+    ImportLibrary,
+    Imported(Result<Box<YtLibrary>, String>),
     Status(Status),
     Connect,
     Connected(Result<Status, String>),
@@ -73,12 +81,16 @@ pub struct State {
     pub library_loaded: bool,
     pub open: Option<OpenPlaylist>,
     pub video: Option<Video>,
+    /// The Google account signed in through the sign-in window.
+    pub account: Option<Account>,
+    pub signing_in: bool,
+    pub importing: bool,
 }
 
 impl App {
     /// Whether YouTube tracks play: the beta is on. Playback itself needs no Google account.
     pub(crate) fn youtube_playable(&self) -> bool {
-        self.services.config().beta == Some(true)
+        true
     }
 
     /// Whether the account section is shown: the beta is on and Google is connected.
@@ -87,6 +99,7 @@ impl App {
     }
 
     pub(crate) fn youtube_boot(&mut self) -> Task<Message> {
+        self.ui.youtube.account = self.services.yt_account();
         let on = self.youtube_playable();
         let availability = self.player_input(PlayerInput::YoutubeAvailable(on));
         if !on {
@@ -101,22 +114,6 @@ impl App {
             Task::perform(async move { services.yt_status().await }, |s| {
                 Message::Youtube(Msg::Status(s))
             }),
-        ])
-    }
-
-    pub(crate) fn youtube_boot_or_clear(&mut self) -> Task<Message> {
-        if self.youtube_playable() {
-            return self.youtube_boot();
-        }
-        self.ui.youtube = State::default();
-        let leave = if self.view_kind() == crate::widgets::rail::View::YouTube {
-            self.update(Message::Nav(crate::widgets::rail::View::Discover))
-        } else {
-            Task::none()
-        };
-        Task::batch([
-            self.player_input(PlayerInput::YoutubeAvailable(false)),
-            leave,
         ])
     }
 
@@ -145,17 +142,74 @@ impl App {
 
     pub(crate) fn on_youtube(&mut self, msg: Msg) -> Task<Message> {
         match msg {
+            Msg::GoogleSignIn => {
+                self.ui.youtube.signing_in = true;
+                let services = self.services.clone();
+                Task::perform(
+                    async move {
+                        services
+                            .yt_sign_in_window()
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |r| Message::Youtube(Msg::GoogleSignedIn(r)),
+                )
+            }
+            Msg::GoogleSignedIn(result) => {
+                self.ui.youtube.signing_in = false;
+                match result {
+                    Ok(Some(account)) => {
+                        self.toast(format!("Signed in as {}", account.name));
+                        self.ui.youtube.account = Some(account);
+                    }
+                    Ok(None) => {}
+                    Err(e) => self.toast(e),
+                }
+                Task::none()
+            }
+            Msg::GoogleSignOut => {
+                self.services.yt_sign_out();
+                self.ui.youtube.account = None;
+                Task::none()
+            }
+            Msg::ImportLibrary => {
+                if self.ui.youtube.importing {
+                    return Task::none();
+                }
+                self.ui.youtube.importing = true;
+                self.toast("Importing your YouTube Music library…");
+                let services = self.services.clone();
+                Task::perform(
+                    async move {
+                        services
+                            .yt_import_everything()
+                            .await
+                            .map(Box::new)
+                            .map_err(|e| e.to_string())
+                    },
+                    |r| Message::Youtube(Msg::Imported(r)),
+                )
+            }
+            Msg::Imported(result) => {
+                self.ui.youtube.importing = false;
+                match result {
+                    Ok(lib) => {
+                        let (liked, lists) = self.apply_youtube_import(*lib);
+                        self.toast(format!(
+                            "Imported {liked} liked songs and {lists} playlists from YouTube Music"
+                        ));
+                        self.touch();
+                    }
+                    Err(e) => self.toast(e),
+                }
+                Task::none()
+            }
             Msg::Status(status) => {
                 let was = self.ui.youtube.status.connected;
                 self.ui.youtube.status = status;
-                if self.view_kind() == crate::widgets::rail::View::YouTube {
-                    if self.youtube_enabled() {
-                        return self.youtube_ensure_loaded();
-                    }
-                    self.ui.view = Some(crate::widgets::rail::View::Discover);
-                    self.retarget_rail();
-                } else if self.youtube_enabled() && !was {
-                    self.retarget_rail();
+                let _ = was;
+                if self.view_kind() == crate::widgets::rail::View::YouTube && self.youtube_enabled() {
+                    return self.youtube_ensure_loaded();
                 }
                 Task::none()
             }
@@ -542,6 +596,95 @@ impl App {
                 p,
             )
         })
+    }
+
+    /// Adds what's new: liked songs to Likes, each playlist as "<name> (YouTube Music)".
+    fn apply_youtube_import(&mut self, lib: YtLibrary) -> (usize, usize) {
+        let mut liked = 0;
+        for t in lib.liked.iter().rev() {
+            if !self.store.is_liked(&t.id) {
+                self.store.likes.insert(0, t.strip());
+                liked += 1;
+            }
+        }
+        let mut lists = 0;
+        for (name, tracks) in &lib.playlists {
+            if tracks.is_empty() {
+                continue;
+            }
+            let name = format!("{name} (YouTube Music)");
+            match self.store.playlists.iter().position(|p| p.name == name) {
+                Some(i) => {
+                    let have: std::collections::HashSet<_> = self.store.playlists[i]
+                        .tracks
+                        .iter()
+                        .map(|t| t.id.clone())
+                        .collect();
+                    let new: Vec<Track> = tracks
+                        .iter()
+                        .filter(|t| !have.contains(&t.id))
+                        .map(Track::strip)
+                        .collect();
+                    self.store.playlists[i].tracks.extend(new);
+                }
+                None => {
+                    self.store.create_playlist(&name, tracks);
+                    lists += 1;
+                }
+            }
+        }
+        (liked, lists)
+    }
+
+    /// The Google sign-in part of the YouTube Music account tab.
+    pub(crate) fn youtube_account(&self, p: Palette) -> Element<'_, Message> {
+        let s = &self.ui.youtube;
+        let (title, hint, actions): (String, String, Vec<Element<'_, Message>>) = match &s.account
+        {
+            Some(a) => (
+                format!("Signed in as {}", a.name),
+                if a.email_or_handle.is_empty() {
+                    "Bring your liked songs and playlists over to Mosaic.".to_string()
+                } else {
+                    format!(
+                        "{} · bring your liked songs and playlists over to Mosaic.",
+                        a.email_or_handle
+                    )
+                },
+                vec![
+                    primary_button(
+                        if s.importing { "Importing…" } else { "Import library" },
+                        Icon::CloudDownload,
+                        p,
+                        Message::Youtube(Msg::ImportLibrary),
+                    ),
+                    tonal_button("Sign out", Icon::Close, p, Message::Youtube(Msg::GoogleSignOut)),
+                ],
+            ),
+            None => (
+                "Sign in with Google".to_string(),
+                "Bring your YouTube Music likes and playlists into Mosaic. Playing needs no account."
+                    .to_string(),
+                vec![primary_button(
+                    if s.signing_in { "Waiting for sign-in…" } else { "Sign in" },
+                    Icon::Person,
+                    p,
+                    Message::Youtube(Msg::GoogleSignIn),
+                )],
+            ),
+        };
+        container(
+            row![
+                column![text(title).size(16), text(hint).size(13).color(p.on_surface_variant)]
+                    .spacing(2)
+                    .width(Length::Fill),
+                row(actions).spacing(8),
+            ]
+            .spacing(24)
+            .align_y(Alignment::Center),
+        )
+        .padding([14, 0])
+        .into()
     }
 
     pub(crate) fn youtube_view(&self, p: Palette) -> Element<'_, Message> {

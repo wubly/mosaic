@@ -13,6 +13,9 @@ const AHEAD_LIMIT: u64 = 24 * 1024 * 1024;
 const BEHIND_LIMIT: u64 = 8 * 1024 * 1024;
 const NEAR_GAP: u64 = 256 * 1024;
 const STALL_AFTER: Duration = Duration::from_millis(150);
+/// Reconnects tried after a dropped connection before the stream gives up. Servers close
+/// connections that sit idle while the buffer is full, so a long track can need several.
+const RECONNECTS: u32 = 6;
 
 struct State {
     start: u64,
@@ -83,6 +86,7 @@ fn request(
 
 fn download(shared: Arc<Shared>, url: String, first: Result<(Head, Box<dyn Read + Send>), String>) {
     let agent = agent();
+    let total = first.as_ref().ok().and_then(|(h, _)| h.total);
     let mut next = Some(first);
     loop {
         let (generation, from) = {
@@ -103,8 +107,8 @@ fn download(shared: Arc<Shared>, url: String, first: Result<(Head, Box<dyn Read 
             }
         };
         let response = next.take().unwrap_or_else(|| request(&agent, &url, from));
-        let mut reader = match response {
-            Ok((_, r)) => r,
+        let mut reader: Option<Box<dyn Read + Send>> = match response {
+            Ok((_, r)) => Some(r),
             Err(e) => {
                 if let Ok(mut st) = shared.state.lock() {
                     if st.generation == generation {
@@ -116,6 +120,7 @@ fn download(shared: Arc<Shared>, url: String, first: Result<(Head, Box<dyn Read 
             }
         };
         let mut buf = vec![0u8; CHUNK];
+        let mut failures = 0u32;
         loop {
             if shared.stop.load(Ordering::Relaxed) {
                 return;
@@ -128,27 +133,76 @@ fn download(shared: Arc<Shared>, url: String, first: Result<(Head, Box<dyn Read 
                 let ahead = (st.start + st.data.len() as u64)
                     .saturating_sub(shared.read_pos.load(Ordering::Relaxed));
                 if ahead > AHEAD_LIMIT {
+                    // Let go of the connection while the buffer is full: servers drop idle
+                    // ones, and the agent's body timeout counts the whole download.
+                    reader = None;
                     let _ = shared.cv.wait_timeout(st, Duration::from_millis(50));
                     continue;
                 }
             }
-            let n = match reader.read(&mut buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    if let Ok(mut st) = shared.state.lock() {
-                        if st.generation == generation {
-                            st.error = Some(format!("Stream interrupted: {e}"));
+            let Some(r) = reader.as_mut() else {
+                failures = 0;
+                match reconnect(&shared, &agent, &url, generation, &mut failures, false) {
+                    Reconnect::Resumed(r) => reader = Some(r),
+                    Reconnect::Superseded => break,
+                    Reconnect::Stopped => return,
+                    Reconnect::Failed(e) => {
+                        if let Ok(mut st) = shared.state.lock() {
+                            if st.generation == generation {
+                                st.error = Some(e);
+                            }
                         }
+                        shared.cv.notify_all();
+                        break;
                     }
-                    shared.cv.notify_all();
-                    break;
                 }
+                continue;
             };
+            let read = r.read(&mut buf);
+            // A dropped connection (an error, or the body ending before the known length)
+            // resumes from where the buffer ends instead of ending the track.
+            let cut = match &read {
+                Err(e) => Some(format!("Stream interrupted: {e}")),
+                Ok(0) => {
+                    let end = shared
+                        .state
+                        .lock()
+                        .map(|st| st.start + st.data.len() as u64)
+                        .unwrap_or(0);
+                    total
+                        .filter(|t| end < *t)
+                        .map(|_| "Stream ended early".to_string())
+                }
+                Ok(_) => None,
+            };
+            if let Some(why) = cut {
+                match reconnect(&shared, &agent, &url, generation, &mut failures, true) {
+                    Reconnect::Resumed(r) => {
+                        reader = Some(r);
+                        continue;
+                    }
+                    Reconnect::Superseded => break,
+                    Reconnect::Stopped => return,
+                    Reconnect::Failed(e) => {
+                        if let Ok(mut st) = shared.state.lock() {
+                            if st.generation == generation {
+                                st.error = Some(if e.is_empty() { why } else { e });
+                            }
+                        }
+                        shared.cv.notify_all();
+                        break;
+                    }
+                }
+            }
+            let n = read.unwrap_or(0);
             let Ok(mut st) = shared.state.lock() else {
                 return;
             };
             if st.generation != generation {
                 break;
+            }
+            if n > 0 {
+                failures = 0;
             }
             if n == 0 {
                 st.done = true;
@@ -165,6 +219,54 @@ fn download(shared: Arc<Shared>, url: String, first: Result<(Head, Box<dyn Read 
             shared.cv.notify_all();
         }
     }
+}
+
+enum Reconnect {
+    Resumed(Box<dyn Read + Send>),
+    /// A seek started a new download meanwhile.
+    Superseded,
+    Stopped,
+    /// Gave up; the message is the last error (empty if there was none to report).
+    Failed(String),
+}
+
+fn reconnect(
+    shared: &Shared,
+    agent: &ureq::Agent,
+    url: &str,
+    generation: u64,
+    failures: &mut u32,
+    backoff: bool,
+) -> Reconnect {
+    let mut last = String::new();
+    while *failures < RECONNECTS {
+        *failures += 1;
+        if backoff || *failures > 1 {
+            std::thread::sleep(Duration::from_millis(250 * (1 << (*failures - 1).min(4))));
+        }
+        if shared.stop.load(Ordering::Relaxed) {
+            return Reconnect::Stopped;
+        }
+        let from = {
+            let Ok(st) = shared.state.lock() else {
+                return Reconnect::Stopped;
+            };
+            if st.generation != generation {
+                return Reconnect::Superseded;
+            }
+            st.start + st.data.len() as u64
+        };
+        match request(agent, url, from) {
+            Ok((_, r)) => {
+                tracing::debug!(from, attempt = *failures, "stream resumed");
+                return Reconnect::Resumed(r);
+            }
+            // An expired link won't come back; the player re-resolves it.
+            Err(e) if e == super::EXPIRED => return Reconnect::Failed(e),
+            Err(e) => last = e,
+        }
+    }
+    Reconnect::Failed(last)
 }
 
 impl HttpSource {
@@ -327,4 +429,63 @@ pub fn open(url: &str, ctx: &SourceCtx) -> Result<Box<dyn AudioStream>, StreamEr
         ctx.duration_hint,
         Some(after_probe),
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// Serves `body` with Range support, cutting each of the first `cuts` responses short.
+    fn flaky_server(body: Vec<u8>, cuts: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for (served, conn) in listener.incoming().enumerate() {
+                let Ok(mut conn) = conn else { return };
+                let mut from = 0usize;
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        from = v.trim().trim_end_matches('-').parse().unwrap_or(0);
+                    }
+                }
+                let rest = &body[from..];
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\
+                     Content-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                    rest.len(),
+                    from,
+                    body.len() - 1,
+                    body.len()
+                );
+                let send = if served < cuts { rest.len().min(100_000) } else { rest.len() };
+                let _ = conn.write_all(&rest[..send]);
+            }
+        });
+        format!("http://{addr}/track")
+    }
+
+    #[test]
+    fn dropped_connections_resume_where_they_stopped() {
+        let body: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+        let url = flaky_server(body.clone(), 3);
+        let ctx = SourceCtx {
+            duration_hint: None,
+            out_rate: 48_000,
+            buffering: Arc::new(|_| {}),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let (mut source, _) = HttpSource::open(&url, &ctx).unwrap();
+        let mut got = Vec::new();
+        source.read_to_end(&mut got).unwrap();
+        assert_eq!(got.len(), body.len());
+        assert!(got == body);
+    }
 }

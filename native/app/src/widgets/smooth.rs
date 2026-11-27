@@ -4,8 +4,8 @@
 //! wheel as usual, so nesting and capture work unchanged, then puts the offset back and eases
 //! toward where it was going over the next frames. Notches that arrive mid-glide add up.
 //!
-//! A horizontal carousel also takes the vertical wheel while the pointer is over it, and hands it
-//! back to the page once it can't move any further that way.
+//! A horizontal carousel moves with sideways wheel or touchpad swipes and with Shift+wheel. A
+//! plain vertical wheel always goes to the page, so scrolling down never catches on a carousel.
 
 use std::time::{Duration, Instant};
 
@@ -35,7 +35,7 @@ pub fn smooth<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Elem
     })
 }
 
-/// Wraps a horizontal carousel: the vertical wheel scrolls it sideways.
+/// Wraps a horizontal carousel: sideways swipes and Shift+wheel scroll it.
 pub fn carousel<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     Element::new(Smooth {
         content: content.into(),
@@ -50,6 +50,7 @@ struct State {
     /// Where the glide is now.
     current: Vector,
     last: Option<Instant>,
+    shift: bool,
 }
 
 /// Bounds, content bounds and offset of the wrapped scrollable.
@@ -220,6 +221,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Smooth<'_, Message> {
             Event::Window(window::Event::RedrawRequested(now)) => {
                 self.glide(tree, layout, renderer, *now, shell);
             }
+            Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) => {
+                tree.state.downcast_mut::<State>().shift = m.shift();
+            }
             // Grabbing the scrollbar (or anything else) takes over from a glide.
             Event::Mouse(mouse::Event::ButtonPressed(_)) => {
                 tree.state.downcast_mut::<State>().target = None;
@@ -328,11 +332,13 @@ impl<Message> Smooth<'_, Message> {
         if !self.horizontal || shell.is_event_captured() {
             return;
         }
-        // A vertical wheel over a carousel moves it sideways, until it runs out of room.
-        let dy = if pixels.y.abs() > pixels.x.abs() {
+        // Sideways swipes and Shift+wheel move a carousel; a plain vertical wheel is the page's.
+        let dy = if pixels.x.abs() > pixels.y.abs() {
+            pixels.x
+        } else if state.shift {
             pixels.y
         } else {
-            pixels.x
+            return;
         };
         let base = state.target.unwrap_or(before.offset);
         let goal = before.clamp(Vector::new(base.x - dy, base.y));

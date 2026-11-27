@@ -10,7 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::Services;
@@ -20,6 +21,12 @@ pub const PORT: u16 = 8899;
 pub const REDIRECT: &str = "http://127.0.0.1:8899/callback";
 const SCOPE: &str = "https://www.googleapis.com/auth/youtube.readonly";
 const AUTH_FILE: &str = "youtube-auth.json";
+const SESSION_FILE: &str = "youtube-session.json";
+/// Where the sign-in web view starts: Google's login, then on to YouTube Music. The caller
+/// watches for the view to land on `music.youtube.com` and then reads that site's cookies
+/// (including the HttpOnly ones, so through the web view's cookie manager, not `document.cookie`).
+pub const SIGN_IN_URL: &str = "https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F";
+pub const MUSIC_ORIGIN: &str = "https://music.youtube.com";
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Tokens {
@@ -37,8 +44,25 @@ pub struct Status {
     pub user: Option<String>,
 }
 
+/// The YouTube Music account a cookie sign-in belongs to.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Account {
+    pub name: String,
+    /// The email address when YouTube shows one, else the channel handle (`@name`).
+    pub email_or_handle: String,
+    pub photo: String,
+}
+
+/// A cookie sign-in as kept on disk.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Session {
+    pub cookies: String,
+    pub account: Account,
+}
+
 #[derive(Default)]
 pub struct State {
+    session: Mutex<Option<Session>>,
     tokens: Mutex<Option<Tokens>>,
     channel: Mutex<Option<String>>,
     /// The anonymous visitor id InnerTube asks `/player` callers to present (see `innertube`).
@@ -48,7 +72,9 @@ pub struct State {
 impl State {
     pub fn load(dirs: &mosaic_core::storage::Dirs) -> State {
         let tokens: Option<Tokens> = read_json(&dirs.file(AUTH_FILE));
+        let session: Option<Session> = read_json(&dirs.file(SESSION_FILE));
         State {
+            session: Mutex::new(session.filter(|s| sapisid_of(&s.cookies).is_some())),
             tokens: Mutex::new(tokens.filter(|t| t.refresh.is_some())),
             channel: Mutex::default(),
             visitor: Mutex::default(),
@@ -60,6 +86,90 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The value of cookie `name` in a `Cookie:` header string.
+fn cookie_value<'a>(cookies: &'a str, name: &str) -> Option<&'a str> {
+    cookies.split(';').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k.trim() == name && !v.trim().is_empty()).then(|| v.trim())
+    })
+}
+
+/// The cookie the request signature is made from. `SAPISID` is what the web player uses;
+/// `__Secure-3PAPISID` carries the same value and is what some cookie exports contain.
+fn sapisid_of(cookies: &str) -> Option<&str> {
+    ["SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"]
+        .iter()
+        .find_map(|n| cookie_value(cookies, n))
+}
+
+/// `SAPISIDHASH <ts>_<sha1("<ts> <sapisid> <origin>")>`, the `Authorization` value Google's
+/// web clients send together with the cookies.
+pub fn sapisid_hash(timestamp: u64, sapisid: &str, origin: &str) -> String {
+    let digest: String = Sha1::digest(format!("{timestamp} {sapisid} {origin}").as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("SAPISIDHASH {timestamp}_{digest}")
+}
+
+/// Tidies pasted or captured cookies: drops a `Cookie:` prefix and line breaks, and adds the
+/// consent cookie that keeps EU requests from being bounced to a consent page.
+fn normalize_cookies(raw: &str) -> String {
+    let flat = raw
+        .trim()
+        .trim_start_matches("Cookie:")
+        .trim_start_matches("cookie:")
+        .replace(['\r', '\n'], ";");
+    let parts: Vec<&str> = flat
+        .split(';')
+        .map(str::trim)
+        .filter(|p| p.contains('='))
+        .collect();
+    let mut out = parts.join("; ");
+    if cookie_value(&out, "SOCS").is_none() {
+        out.push_str("; SOCS=CAI");
+    }
+    out
+}
+
+/// Account details out of an `account/account_menu` response; `None` when the cookies are not
+/// signed in (the response then has no active-account header).
+pub fn parse_account(response: &Value) -> Option<Account> {
+    fn find<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+        match node {
+            Value::Object(map) => map
+                .get(key)
+                .or_else(|| map.values().find_map(|v| find(v, key))),
+            Value::Array(list) => list.iter().find_map(|v| find(v, key)),
+            _ => None,
+        }
+    }
+    fn text(node: &Value) -> String {
+        node["runs"]
+            .as_array()
+            .map(|r| r.iter().filter_map(|r| r["text"].as_str()).collect())
+            .or_else(|| node["simpleText"].as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+    let header = find(response, "activeAccountHeaderRenderer")?;
+    let name = text(&header["accountName"]);
+    if name.is_empty() {
+        return None;
+    }
+    let email = text(&header["email"]);
+    let handle = text(&header["channelHandle"]);
+    Some(Account {
+        name,
+        email_or_handle: if email.is_empty() { handle } else { email },
+        photo: header["accountPhoto"]["thumbnails"]
+            .as_array()
+            .and_then(|t| t.last())
+            .and_then(|t| t["url"].as_str())
+            .unwrap_or_default()
+            .to_string(),
+    })
 }
 
 fn random_b64(bytes: usize) -> String {
@@ -90,6 +200,75 @@ pub fn authorize_url(client_id: &str, challenge: &str, state: &str) -> String {
 }
 
 impl Services {
+    /// The signed-in YouTube Music account (cookie sign-in), if any. No network.
+    pub fn yt_account(&self) -> Option<Account> {
+        self.inner
+            .youtube
+            .session
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|s| s.account.clone())
+    }
+
+    /// Signs in with the cookies a Google sign-in left behind (see [`SIGN_IN_URL`]). The cookies
+    /// are checked against YouTube Music first and only kept when they are a live session.
+    pub async fn yt_cookie_login(&self, cookies: &str) -> Result<Account> {
+        let cookies = normalize_cookies(cookies);
+        if sapisid_of(&cookies).is_none() {
+            bail!("Those cookies have no Google sign-in (SAPISID is missing)");
+        }
+        let response = self
+            .yt_music_post("account/account_menu", json!({}), &cookies)
+            .await?;
+        let account = parse_account(&response)
+            .ok_or_else(|| anyhow!("YouTube Music doesn't see a signed-in account"))?;
+        let session = Session {
+            cookies,
+            account: account.clone(),
+        };
+        let _ = write_json_atomic(&self.inner.dirs.file(SESSION_FILE), &session);
+        *self
+            .inner
+            .youtube
+            .session
+            .lock()
+            .map_err(|_| anyhow!("poisoned"))? = Some(session);
+        Ok(account)
+    }
+
+    /// Forgets the cookie sign-in.
+    pub fn yt_sign_out(&self) {
+        if let Ok(mut s) = self.inner.youtube.session.lock() {
+            *s = None;
+        }
+        let _ = std::fs::remove_file(self.inner.dirs.file(SESSION_FILE));
+    }
+
+    pub(crate) fn yt_cookies(&self) -> Option<String> {
+        self.inner
+            .youtube
+            .session
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|s| s.cookies.clone())
+    }
+
+    /// The headers that authenticate a request to YouTube Music as the signed-in user.
+    pub(crate) fn yt_auth_headers(cookies: &str) -> Result<Vec<(&'static str, String)>> {
+        let sapisid = sapisid_of(cookies).ok_or_else(|| anyhow!("Not signed in to YouTube"))?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Ok(vec![
+            ("Authorization", sapisid_hash(ts, sapisid, MUSIC_ORIGIN)),
+            ("Cookie", cookies.to_string()),
+            ("X-Goog-AuthUser", "0".into()),
+            ("X-Origin", MUSIC_ORIGIN.into()),
+        ])
+    }
+
     fn yt_client_id(&self) -> String {
         self.config()
             .youtube_client_id
@@ -304,6 +483,48 @@ mod tests {
             challenge_for("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
+    }
+
+    #[test]
+    fn sapisid_hash_matches_a_known_vector() {
+        // sha1("1700000000 abc123 https://music.youtube.com"), checked with sha1sum.
+        assert_eq!(
+            sapisid_hash(1_700_000_000, "abc123", MUSIC_ORIGIN),
+            "SAPISIDHASH 1700000000_597a8411c1c01f9c14cea84b6ec377b76d93be6e"
+        );
+    }
+
+    #[test]
+    fn cookies_are_normalized_and_the_sapisid_found() {
+        let c =
+            normalize_cookies("Cookie: SID=1; SAPISID=abc/def;\r\n__Secure-3PAPISID=zzz ; junk");
+        assert_eq!(c, "SID=1; SAPISID=abc/def; __Secure-3PAPISID=zzz; SOCS=CAI");
+        assert_eq!(sapisid_of(&c), Some("abc/def"));
+        let only3p = normalize_cookies("__Secure-3PAPISID=zzz; SOCS=X");
+        assert_eq!(sapisid_of(&only3p), Some("zzz"));
+        assert!(only3p.ends_with("SOCS=X"));
+        assert_eq!(sapisid_of("SID=1"), None);
+        assert_eq!(sapisid_of("SAPISID="), None);
+    }
+
+    #[test]
+    fn auth_headers_carry_the_signature_and_cookies() {
+        let h = Services::yt_auth_headers("SID=1; SAPISID=abc").unwrap();
+        let get = |n: &str| h.iter().find(|(k, _)| *k == n).unwrap().1.clone();
+        assert!(get("Authorization").starts_with("SAPISIDHASH "));
+        assert_eq!(get("Cookie"), "SID=1; SAPISID=abc");
+        assert_eq!(get("X-Origin"), "https://music.youtube.com");
+        assert!(Services::yt_auth_headers("SID=1").is_err());
+    }
+
+    #[test]
+    fn account_menu_parses_name_handle_and_photo() {
+        let fixture = include_str!("../../tests/fixtures/yt_library_account_menu.json");
+        let account = parse_account(&serde_json::from_str(fixture).unwrap()).unwrap();
+        assert_eq!(account.name, "Ada Lovelace");
+        assert_eq!(account.email_or_handle, "@adalovelace");
+        assert!(account.photo.ends_with("=s88-c-k-c0x00ffffff-no-rj"));
+        assert_eq!(parse_account(&json!({"actions": []})), None);
     }
 
     #[test]

@@ -9,8 +9,8 @@ use crate::theme::{alpha, mix, styles, Palette};
 use crate::widgets::icon::{icon, Icon};
 use crate::widgets::visualizer::{is_silent, smooth, visualizer, BARS};
 
-pub const MINI_SIZE: iced::Size = iced::Size::new(380.0, 660.0);
-pub const MINI_MIN: iced::Size = iced::Size::new(340.0, 440.0);
+pub const MINI_SIZE: iced::Size = iced::Size::new(460.0, 168.0);
+pub const MINI_MIN: iced::Size = iced::Size::new(400.0, 160.0);
 pub const NORMAL_MIN: iced::Size = iced::Size::new(980.0, 640.0);
 
 impl App {
@@ -156,47 +156,73 @@ impl App {
         .into()
     }
 
+    /// A compact card: artwork, what's playing, the transport and the seek wave. The whole card
+    /// drags the window; expand and close sit in its corner.
     pub(crate) fn mini_view(&self, p: Palette) -> Element<'_, Message> {
-        let content: Element<'_, Message> = match &self.player.track {
-            Some(t) => column![
-                container(self.art(&t.artwork, 210.0, 24.0)).center_x(Length::Fill),
-                column![
-                    text(t.title.clone())
-                        .size(18)
-                        .wrapping(text::Wrapping::None),
-                    text(t.artist.clone()).size(14).color(p.on_surface_variant),
-                    crate::views::track::provider_tag(t, 12.0, p.on_surface_variant),
-                ]
-                .spacing(2)
-                .align_x(Alignment::Center)
-                .width(Length::Fill),
-                self.lyrics_body(Variant::Bare, p),
-                self.controls_view(p),
-            ]
-            .spacing(10)
-            .align_x(Alignment::Center)
-            .into(),
-            None => column![
-                container(text("Nothing playing yet.").color(p.on_surface_variant))
-                    .center_x(Length::Fill)
-                    .padding(iced::Padding {
-                        top: 80.0,
-                        ..iced::Padding::ZERO
-                    }),
-                Space::new().height(Length::Fill),
-                self.controls_view(p),
-            ]
-            .into(),
+        let corner = |glyph: Icon, tip: &str, msg: Message| {
+            iced::widget::tooltip(
+                button(container(icon(glyph, 16.0)).center(Length::Fill))
+                    .width(28)
+                    .height(28)
+                    .padding(0)
+                    .style(styles::icon_button(p, false))
+                    .on_press(msg),
+                container(text(tip.to_string()).size(12))
+                    .padding([4, 8])
+                    .style(styles::popup(p, 8.0)),
+                iced::widget::tooltip::Position::Bottom,
+            )
         };
-        stack![
-            self.ambient_view(p),
-            container(content).padding(iced::Padding {
-                top: 48.0,
-                right: 20.0,
-                bottom: 16.0,
-                left: 20.0
-            }),
+        let (art, title, artist): (Element<'_, Message>, String, String) = match &self.player.track
+        {
+            Some(t) => (
+                self.art(&t.artwork, 116.0, 18.0),
+                t.title.clone(),
+                t.artist.clone(),
+            ),
+            None => (
+                container(icon(Icon::MusicNote, 36.0).color(p.on_surface_variant))
+                    .center(116)
+                    .style(styles::fill(p.surface_container_high, 18.0))
+                    .into(),
+                "Nothing playing".to_string(),
+                "Pick a track in the full window".to_string(),
+            ),
+        };
+        let head = row![
+            column![
+                text(title)
+                    .size(16)
+                    .wrapping(text::Wrapping::None),
+                text(artist)
+                    .size(13)
+                    .color(p.on_surface_variant)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(2)
+            .width(Length::Fill)
+            .clip(true),
+            corner(Icon::OpenInFull, "Back to the full window (I)", Message::ToggleMini),
+            corner(Icon::Close, "Close", Message::CloseRequested),
         ]
-        .into()
+        .spacing(2)
+        .align_y(Alignment::Start);
+        let card = row![
+            art,
+            column![head, Space::new().height(Length::Fill), self.mini_controls(p)]
+                .spacing(4)
+                .height(Length::Fill)
+                .width(Length::Fill),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center);
+        let body = iced::widget::mouse_area(
+            container(card)
+                .padding(16)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .on_press(Message::DragWindow);
+        stack![self.ambient_view(p), body].into()
     }
 }

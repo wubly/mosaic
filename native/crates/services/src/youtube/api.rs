@@ -186,9 +186,13 @@ impl Services {
     /// music endpoint fails. Signed in or not, it doesn't touch the Data API quota.
     pub async fn yt_search(&self, query: &str) -> Result<Vec<Track>> {
         use crate::ranking::refine;
-        match self.yt_search_music(query).await {
-            // YouTube Music's own order is good; this only tidies and de-duplicates it.
-            Ok(tracks) => Ok(refine(query, tracks, &[], &[], 3.0, SEARCH_LIMIT)),
+        match self.yt_search_music_counted(query).await {
+            // YouTube Music's own order is good; this tidies it, de-duplicates it and lets
+            // play counts put the original above its covers.
+            Ok(counted) => {
+                let (tracks, plays): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+                Ok(refine(query, tracks, &plays, &[], 3.0, SEARCH_LIMIT))
+            }
             Err(e) => {
                 tracing::warn!("YouTube Music search failed, using website search: {e}");
                 let tracks = self.yt_search_public(query).await?;

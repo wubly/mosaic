@@ -41,11 +41,11 @@ pub enum SearchService {
 }
 
 impl SearchService {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             SearchService::SoundCloud => "SoundCloud",
             SearchService::Spotify => "Spotify",
-            SearchService::YouTube => "YouTube",
+            SearchService::YouTube => "YouTube Music",
             SearchService::Monochrome => "Monochrome",
             SearchService::Device => "This device",
         }
@@ -56,6 +56,17 @@ impl std::fmt::Display for SearchService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.label())
     }
+}
+
+/// What a Discover-style page shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Home: everything that's yours, with a search across a picked service.
+    Home,
+    /// A service's own search tab.
+    Search(SearchService),
+    /// SoundCloud's charts.
+    Charts,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +82,10 @@ pub enum Msg {
     Genre(&'static str),
     Charts(&'static str, Result<Vec<Track>, String>),
     More(String, Result<Vec<Track>, String>),
+    /// Completions for what's typed (for query `seq`).
+    Suggestions(u64, Vec<String>),
+    /// Search for a completion.
+    Suggest(String),
 }
 
 pub struct State {
@@ -91,6 +106,8 @@ pub struct State {
     /// Seed id and the "because you played" list.
     pub more: (Option<mosaic_core::model::TrackId>, Vec<Track>),
     pub more_busy: bool,
+    /// Completions of the query being typed, and the query they're for.
+    pub suggestions: (String, Vec<String>),
 }
 
 impl Default for State {
@@ -110,6 +127,7 @@ impl Default for State {
             charts_loaded: false,
             more: (None, Vec::new()),
             more_busy: false,
+            suggestions: (String::new(), Vec::new()),
         }
     }
 }
@@ -184,11 +202,46 @@ impl App {
                     self.ui.discover.error.clear();
                 } else if trimmed.is_empty() {
                     self.clear_search_results();
+                    self.ui.discover.suggestions = (String::new(), Vec::new());
                     return Task::none();
                 }
-                Task::perform(tokio::time::sleep(DEBOUNCE), move |()| {
+                let debounce = Task::perform(tokio::time::sleep(DEBOUNCE), move |()| {
                     Message::Discover(Msg::Debounced(seq))
-                })
+                });
+                // Completions come straight away, well before the debounced search.
+                let services = self.services.clone();
+                let suggest = Task::perform(
+                    async move {
+                        services
+                            .yt_search_suggestions(&trimmed)
+                            .await
+                            .map(|list| {
+                                list.into_iter()
+                                    .filter(|s| {
+                                        s.kind
+                                            == mosaic_services::youtube::music::SuggestionKind::Query
+                                    })
+                                    .map(|s| s.text)
+                                    .take(6)
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    },
+                    move |list| Message::Discover(Msg::Suggestions(seq, list)),
+                );
+                Task::batch([debounce, suggest])
+            }
+            Msg::Suggestions(seq, list) => {
+                if seq == self.ui.discover.seq {
+                    self.ui.discover.suggestions = (self.ui.discover.query.clone(), list);
+                }
+                Task::none()
+            }
+            Msg::Suggest(q) => {
+                self.ui.discover.query = q;
+                self.ui.discover.suggestions = (String::new(), Vec::new());
+                self.ui.discover.seq += 1;
+                self.run_search()
             }
             Msg::Debounced(seq) => {
                 if seq != self.ui.discover.seq || self.ui.discover.query.trim().chars().count() < 2
@@ -405,9 +458,9 @@ impl App {
                 }),
             )
             .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(6).scroller_width(6),
+                scrollable::Scrollbar::new().width(4).scroller_width(4),
             ))
-            .style(styles::scrollbar(p)),
+            .style(styles::carousel_scrollbar(p)),
         )
     }
 
@@ -485,6 +538,45 @@ impl App {
         .into()
     }
 
+    /// Completions of the current query as chips under the search bar; a fixed-height row so
+    /// results don't jump as they come and go.
+    fn suggestion_row(&self, p: Palette) -> Element<'_, Message> {
+        let d = &self.ui.discover;
+        let (for_query, list) = &d.suggestions;
+        let typed = d.query.trim().to_lowercase();
+        let shown: Vec<&String> = if *for_query == d.query {
+            list.iter()
+                .filter(|s| s.trim().to_lowercase() != typed)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let chips = iced::widget::Row::with_children(shown.into_iter().map(|s| {
+            button(
+                row![
+                    icon(Icon::Search, 14.0).color(p.on_surface_variant),
+                    text(s.clone()).size(13)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .height(30)
+            .padding([0, 12])
+            .style(styles::chip(p, false))
+            .on_press(Message::Discover(Msg::Suggest(s.clone())))
+            .into()
+        }))
+        .spacing(6)
+        .wrap()
+        .vertical_spacing(6);
+        container(chips)
+            .padding(iced::Padding {
+                top: 10.0,
+                ..iced::Padding::ZERO
+            })
+            .into()
+    }
+
     /// The search bar with the service picker beside it, or under it when the page is narrow.
     fn search_row(&self, p: Palette) -> Element<'_, Message> {
         if self.main_width() < 680.0 {
@@ -533,12 +625,17 @@ impl App {
     }
 
     pub(crate) fn discover_view(&self, p: Palette) -> Element<'_, Message> {
+        self.discover_page(Mode::Home, p)
+    }
+
+    pub(crate) fn discover_page(&self, mode: Mode, p: Palette) -> Element<'_, Message> {
         let d = &self.ui.discover;
         let name = self.services.config().name.unwrap_or_default();
-        let title = if name.is_empty() {
-            "What's next?".to_string()
-        } else {
-            format!("Hey {name}, what's next?")
+        let title = match mode {
+            Mode::Home if name.is_empty() => "What's next?".to_string(),
+            Mode::Home => format!("Hey {name}, what's next?"),
+            Mode::Search(service) => service.label().to_string(),
+            Mode::Charts => "SoundCloud".to_string(),
         };
         let h3 = |s: String| {
             container(text(s).size(16).color(p.on_surface_variant)).padding(iced::Padding {
@@ -553,27 +650,52 @@ impl App {
                 .align_y(Alignment::Center),
             text(title).size(28),
             Space::new().height(24),
-            self.search_row(p),
         ]
         .spacing(4);
+        body = match mode {
+            Mode::Home => body.push(self.search_row(p)).push(self.suggestion_row(p)),
+            Mode::Search(_) => body.push(self.search_bar(p)).push(self.suggestion_row(p)),
+            Mode::Charts => body,
+        };
 
-        if !d.query.trim().is_empty() {
+        let unavailable = matches!(mode, Mode::Search(svc) if svc != self.search_service());
+        if matches!(mode, Mode::Search(_)) && (d.query.trim().is_empty() || unavailable) {
+            let svc = match mode {
+                Mode::Search(svc) => svc,
+                _ => self.search_service(),
+            };
+            let hint = match svc {
+                SearchService::Spotify if !self.spotify_enabled() => {
+                    "Connect Spotify in the Account tab to search it."
+                }
+                SearchService::Monochrome => "Lossless FLAC from Monochrome's public catalog.",
+                _ => "Songs, artists and albums.",
+            };
+            body = body.push(
+                container(text(hint).size(14).color(p.on_surface_variant)).padding(
+                    iced::Padding {
+                        top: 24.0,
+                        ..iced::Padding::ZERO
+                    },
+                ),
+            );
+        } else if mode != Mode::Charts && !d.query.trim().is_empty() {
             let service = self.search_service();
             let sp = &self.ui.spotify.search;
             let on_spotify = service == SearchService::Spotify;
             if on_spotify && !sp.artists.is_empty() {
                 body = body
-                    .push(h3("Spotify artists (beta)".into()))
+                    .push(h3("Artists".into()))
                     .push(self.artist_cards(&sp.artists, p));
             }
             if on_spotify && !sp.albums.is_empty() {
                 body = body
-                    .push(h3("Spotify albums".into()))
+                    .push(h3("Albums".into()))
                     .push(self.album_cards(&sp.albums, p));
             }
             if on_spotify && !sp.playlists.is_empty() {
                 body = body
-                    .push(h3("Spotify playlists".into()))
+                    .push(h3("Playlists".into()))
                     .push(self.playlist_cards(&sp.playlists, None, p));
             }
             body = body.push(
@@ -614,18 +736,21 @@ impl App {
             }
         } else {
             let recent = self.recent.as_slice();
-            if !recent.is_empty() {
+            let home = mode == Mode::Home;
+            if home && !recent.is_empty() {
                 body = body.push(h3("Jump back in".into())).push(self.shelf(
                     recent,
                     ListRef::Recent,
                     p,
                 ));
             }
-            if !self.ui.spotify.saved.is_empty() {
+            if home && !self.ui.spotify.saved.is_empty() {
                 body = body
-                    .push(h3("Your Spotify likes (beta)".into()))
+                    .push(h3("Your Spotify likes".into()))
                     .push(self.tile_shelf(&self.ui.spotify.saved, ListRef::SpotifySaved, p));
             }
+            // Charts live on SoundCloud's tab; Home shows them only until there's history.
+            let charts = mode == Mode::Charts || recent.is_empty();
             let chips = iced::widget::Row::with_children(GENRES.iter().map(|(g, label)| {
                 button(container(text(*label).size(14)).center_y(Length::Fill))
                     .height(32)
@@ -640,6 +765,7 @@ impl App {
                 .iter()
                 .find(|(g, _)| *g == d.genre)
                 .map_or("", |(_, l)| *l);
+            if charts {
             body = body.push(
                 row![
                     container(text(genre_title).size(16).color(p.on_surface_variant)),
@@ -662,6 +788,7 @@ impl App {
                 body = body.push(text("Couldn’t load this right now.").color(p.on_surface_variant));
             } else {
                 body = body.push(self.shelf(&d.charts.1, ListRef::Charts, p));
+            }
             }
             if let (Some(_), true) = (&d.more.0, d.more_busy || !d.more.1.is_empty()) {
                 let seed = self

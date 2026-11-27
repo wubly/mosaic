@@ -169,7 +169,7 @@ fn err(e: anyhow::Error) -> String {
 impl App {
     /// Spotify browsing is available when the beta is on and the account is connected.
     pub(crate) fn spotify_enabled(&self) -> bool {
-        self.services.config().beta == Some(true) && self.ui.spotify.status.connected
+        self.ui.spotify.status.connected
     }
 
     /// Whether Spotify tracks can be played (Premium + librespot compiled in).
@@ -183,9 +183,6 @@ impl App {
     }
 
     pub(crate) fn spotify_boot(&mut self) -> Task<Message> {
-        if self.services.config().beta != Some(true) {
-            return Task::none();
-        }
         self.ui.spotify.client_id = self.services.config().spotify_client_id.unwrap_or_default();
         #[cfg(feature = "spotify")]
         {
@@ -389,13 +386,9 @@ impl App {
                     ));
                     tasks.push(self.load_editable());
                 }
-                if self.view_kind() == crate::widgets::rail::View::Spotify {
-                    if self.spotify_enabled() {
-                        tasks.push(self.spotify_ensure_loaded());
-                    } else {
-                        self.ui.view = Some(crate::widgets::rail::View::Discover);
-                        self.retarget_rail();
-                    }
+                if self.view_kind() == crate::widgets::rail::View::Spotify && self.spotify_enabled()
+                {
+                    tasks.push(self.spotify_ensure_loaded());
                 }
                 Task::batch(tasks)
             }
@@ -807,9 +800,9 @@ impl App {
                 ..iced::Padding::ZERO
             }))
             .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(6).scroller_width(6),
+                scrollable::Scrollbar::new().width(4).scroller_width(4),
             ))
-            .style(styles::scrollbar(p)),
+            .style(styles::carousel_scrollbar(p)),
         )
     }
 

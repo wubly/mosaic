@@ -35,9 +35,10 @@ const MAC_INSET: f32 = 92.0;
 /// Fade-through timings: the old page fades out quickly, the new one eases in.
 const PAGE_OUT_MS: u64 = 90;
 const PAGE_IN_MS: u64 = 320;
-/// Animation frame interval (about 60 fps). Not the display's rate: every frame rebuilds and
-/// redraws the whole window, so on a 360 Hz monitor a fade or spring cost 12 % of a core.
-pub const FRAME: Duration = Duration::from_micros(16_667);
+/// Animation frame interval: 120 fps at most (the present mode holds it to the display's rate
+/// below that). Not every vsync: a frame that rebuilds the view costs a lot on a 360 Hz monitor.
+/// Playback alone doesn't need these frames: the seek bar animates itself on redraws.
+pub const FRAME: Duration = Duration::from_micros(8_333);
 
 pub struct Flags {
     pub dirs: Dirs,
@@ -102,6 +103,7 @@ pub enum Message {
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     PlatformReady(Option<isize>),
     Nav(View),
+    PlatformTab(View, crate::views::platform::Tab),
     Frame(Instant),
     Tick,
     PollImages,
@@ -151,6 +153,9 @@ pub(crate) struct Ui {
     pub(crate) importing: bool,
     pub(crate) update: mosaic_services::update::UpdateState,
     pub(crate) checking_update: bool,
+    /// The downloaded installer for `update.latest`, or the download in flight.
+    pub(crate) update_file: Option<std::path::PathBuf>,
+    pub(crate) update_busy: bool,
     pub(crate) onboarding: Option<crate::views::onboarding::State>,
     pub(crate) hidden: bool,
     pub(crate) spotify: crate::views::spotify::State,
@@ -166,6 +171,8 @@ pub(crate) struct Ui {
     pub(crate) drop_seq: u64,
     /// A navigation waiting for the current page to fade out.
     pub(crate) nav: Option<View>,
+    /// The sub-tab last picked on each platform view.
+    pub(crate) platform_tabs: std::collections::HashMap<View, crate::views::platform::Tab>,
 }
 
 pub struct App {
@@ -296,6 +303,10 @@ impl App {
                 "local" => View::Local,
                 "queue" => View::Queue,
                 "settings" => View::Settings,
+                "soundcloud" => View::SoundCloud,
+                "spotify" => View::Spotify,
+                "youtube" => View::YouTube,
+                "monochrome" => View::Monochrome,
                 _ => View::Discover,
             });
             if v == "palette" {
@@ -399,12 +410,7 @@ impl App {
     }
 
     pub(crate) fn retarget_rail(&mut self) {
-        let y = rail::pill_y(
-            self.rail_view(),
-            self.spotify_enabled(),
-            self.youtube_enabled(),
-            self.rail_height(),
-        );
+        let y = rail::pill_y(self.rail_view(), self.rail_height());
         self.anim.spring("rail-pill", y, 500.0, 36.0);
     }
 
@@ -432,8 +438,7 @@ impl App {
         self.retarget_rail();
         self.page_transition();
         match view {
-            View::Spotify => self.spotify_ensure_loaded(),
-            View::YouTube => self.youtube_ensure_loaded(),
+            v if crate::views::platform::is_platform(v) => self.platform_entered(v),
             View::Queue => self.on_spotify(crate::views::spotify::Msg::PollQueue),
             _ => Task::none(),
         }
@@ -467,6 +472,7 @@ impl App {
         let was_spotify = self.playing_spotify();
         let volume = self.settings().volume;
         let fx = self.player.handle(input, Instant::now());
+        self.services.set_spotify_leads(self.player.spotify_led());
         let after = self.player.track.as_ref().map(|t| t.id.clone());
         let task = Task::batch([
             self.run_effects(fx),
@@ -630,19 +636,14 @@ impl App {
                         crate::player::RelatedPurpose::Autoplay => 40,
                         crate::player::RelatedPurpose::Radio => 20,
                     };
+                    // A few tracks before the seed steer the radio too (see `autoplay`).
+                    let seeds = self.player.recent_seeds(&seed, 3);
                     tasks.push(Task::perform(
                         async move {
-                            let result = match seed.source {
-                                mosaic_core::model::Source::YouTube => services
-                                    .yt_related(seed.video_id.as_deref().unwrap_or_default())
-                                    .await
-                                    .map(|list| list.into_iter().take(limit as usize).collect()),
-                                mosaic_core::model::Source::Monochrome => {
-                                    services.mono_related(&seed, limit as usize).await
-                                }
-                                _ => services.sc_related(&seed.id, limit).await,
-                            }
-                            .map_err(|e| e.to_string());
+                            let result = services
+                                .autoplay(&seeds, limit as usize)
+                                .await
+                                .map_err(|e| e.to_string());
                             (seed, result)
                         },
                         move |(seed, result)| {
@@ -997,6 +998,7 @@ impl App {
                 self.set_setting(|s| s.lyrics_open = !open)
             }
             Message::Tune(msg) => self.on_tune(msg),
+            Message::PlatformTab(view, tab) => self.on_platform_tab(view, tab),
             Message::Nav(view) => {
                 if crate::anim::reduced_motion()
                     || (view == self.view_kind() && self.ui.nav.is_none())
@@ -1006,12 +1008,7 @@ impl App {
                 // Fade-through: the current page fades out, then the new one eases in. The rail
                 // pill heads for the new item straight away.
                 self.ui.nav = Some(view);
-                let y = rail::pill_y(
-                    view,
-                    self.spotify_enabled(),
-                    self.youtube_enabled(),
-                    self.rail_height(),
-                );
+                let y = rail::pill_y(view, self.rail_height());
                 self.anim.spring("rail-pill", y, 500.0, 36.0);
                 let now = Instant::now();
                 self.anim.tween(
@@ -1055,7 +1052,21 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Tick => self.player_input(PlayerInput::Tick),
+            Message::Tick => {
+                let tick = self.player_input(PlayerInput::Tick);
+                #[cfg(feature = "spotify")]
+                if self.player.spotify_due_soon() {
+                    let services = self.services.clone();
+                    let warm = Task::future(async move {
+                        if services.spotify_playback_current().await.is_none() {
+                            let _ = services.spotify_playback().await;
+                        }
+                    })
+                    .discard();
+                    return Task::batch([tick, warm]);
+                }
+                tick
+            }
             Message::PollImages => Task::none(),
             Message::ToastTick => {
                 let now = self.now;
@@ -1321,7 +1332,9 @@ impl App {
             || self.images.is_fading(self.now)
             || self.viz_active()
             || self.video_active()
-            || (self.player.track.is_some() && (self.player.playing || self.player.loading))
+            || (self.player.track.is_some()
+                && (self.player.playing || self.player.loading)
+                && (self.settings().lyrics_open || self.ui.now_playing || self.ui.mini))
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -1361,7 +1374,7 @@ impl App {
         let mut layers = if let Some(o) = &self.ui.onboarding {
             stack![self.onboarding_view(o, p), self.titlebar(p)]
         } else if self.ui.mini {
-            stack![self.mini_view(p), self.titlebar(p)]
+            stack![self.mini_view(p)]
         } else {
             let mut base = stack![self.ambient_view(p), self.shell(p)];
             let np = self.ui.now_playing && self.player.track.is_some();
@@ -1579,8 +1592,6 @@ impl App {
         let nav = rail::view(
             self.rail_view(),
             self.player.queue.list.len(),
-            self.spotify_enabled(),
-            self.youtube_enabled(),
             self.anim.value("rail-pill", 0.0),
             p,
             Message::Nav,
@@ -1590,8 +1601,9 @@ impl App {
             View::Library | View::Playlists => self.library_view(p),
             View::Local => self.local_view(p),
             View::Queue => self.queue_view(p),
-            View::Spotify => self.spotify_view(p),
-            View::YouTube => self.youtube_view(p),
+            View::SoundCloud | View::Spotify | View::YouTube | View::Monochrome => {
+                self.platform_view(current, p)
+            }
             View::Settings => self.settings_view(p),
         };
         let t = self.anim.value("page", 1.0).clamp(0.0, 1.0);

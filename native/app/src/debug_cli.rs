@@ -199,6 +199,11 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             println!("{} tracks", tracks.len());
         }
         "play" => play(mosaic_audio::SourceSpec::File(arg(1)?.into()), 0.0)?,
+        "http-play" => {
+            let url = arg(1)?.to_string();
+            tokio::task::spawn_blocking(move || play(mosaic_audio::SourceSpec::Http { url }, 0.0))
+                .await??;
+        }
         "sc-play" => {
             let id = TrackId::Num(arg(1)?.parse()?);
             let start = cmd.get(2).map_or(Ok(0.0), |v| v.parse::<f64>())?;
@@ -228,6 +233,20 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
             let tracks: Vec<_> = r.tracks.into_iter().take(count).collect();
             for t in &tracks {
                 println!("queued {} - {} ({}ms)", t.artist, t.title, t.duration);
+            }
+            queue_play(services, tracks, 0.0).await?;
+        }
+        // Plays the first `count` Monochrome search results through the real controller.
+        "mono-play" => {
+            let count = cmd.get(2).map_or(Ok(2), |v| v.parse::<usize>())?;
+            let tracks: Vec<_> = services
+                .mono_search(arg(1)?)
+                .await?
+                .into_iter()
+                .take(count)
+                .collect();
+            for t in &tracks {
+                println!("queued {} - {} ({:?})", t.artist, t.title, t.id);
             }
             queue_play(services, tracks, 0.0).await?;
         }
@@ -368,7 +387,7 @@ async fn queue_play(
                     let (services, tx) = (services.clone(), tx.clone());
                     tokio::spawn(async move {
                         let result = services
-                            .sc_related(&seed.id, 40)
+                            .autoplay(std::slice::from_ref(&seed), 40)
                             .await
                             .map_err(|e| e.to_string());
                         let _ = tx.send(PlayerInput::Related {

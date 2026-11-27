@@ -32,9 +32,12 @@ const PAUSE_FADE_MS: u32 = 250;
 const RESUME_FADE_MS: u32 = 300;
 const PREV_RESTARTS_AFTER: f64 = 3.0;
 
-pub const UNAVAILABLE_YOUTUBE: &str = "Turn on YouTube in Settings → Beta";
+/// Autoplay tops the queue up once fewer than this many tracks follow the current one.
+const AUTOPLAY_LOW_WATER: isize = 2;
+
+pub const UNAVAILABLE_YOUTUBE: &str = "YouTube isn’t available right now";
 pub const UNAVAILABLE_SOURCE: &str = "Not available in this version";
-pub const UNAVAILABLE_SPOTIFY: &str = "Connect Spotify in Settings → Beta";
+pub const UNAVAILABLE_SPOTIFY: &str = "Connect Spotify in the Spotify tab";
 
 /// What the service layer resolved for a track.
 #[derive(Clone, Debug)]
@@ -206,6 +209,10 @@ pub struct PlayerController {
     /// Tracks this player copied from Spotify's up-next list into the end of the queue; while
     /// nothing else follows the current track, they're kept in step with Spotify's list.
     spotify_tail: Vec<TrackId>,
+    /// Tracks autoplay added to the end of the queue (shown as "Autoplay" in the queue).
+    pub auto_tail: Vec<TrackId>,
+    /// The queue ran out while autoplay was still fetching: play its first track on arrival.
+    continue_on_related: bool,
     crossfading: f64,
     handed_over: bool,
     crossfade_for: Option<u64>,
@@ -243,6 +250,8 @@ impl PlayerController {
             silence: None,
             fetching_more: false,
             spotify_tail: Vec::new(),
+            auto_tail: Vec::new(),
+            continue_on_related: false,
             crossfading: 0.0,
             handed_over: false,
             crossfade_for: None,
@@ -347,6 +356,8 @@ impl PlayerController {
             }
             PlayerInput::ClearQueue => {
                 self.queue.clear();
+                self.auto_tail.clear();
+                self.spotify_tail.clear();
                 self.queue_dirty = true;
             }
             PlayerInput::StartRadio(t) => self.start_radio(t, now, fx),
@@ -748,6 +759,11 @@ impl PlayerController {
             return self.seek(0.0, fx);
         }
 
+        if direction > 0 && !auto && self.spotify_led() {
+            // Spotify's own next track (its queue or autoplay), which the player then follows.
+            fx.push(Effect::SpotifySkip);
+            return;
+        }
         if let Some(index) = self.next_playable(direction) {
             let fade_in = if auto { self.crossfading } else { 0.0 };
             self.crossfading = 0.0;
@@ -778,13 +794,100 @@ impl PlayerController {
                     Source::SoundCloud | Source::YouTube | Source::Monochrome
                 )
             });
+        let can_continue = can_continue || (auto && self.fetching_more);
         if let (true, Some(seed)) = (can_continue, seed) {
-            self.fetching_more = true;
-            fx.push(Effect::FetchRelated {
-                seed,
-                purpose: RelatedPurpose::Autoplay,
-            });
+            self.continue_on_related = true;
+            if !self.fetching_more {
+                self.fetching_more = true;
+                fx.push(Effect::FetchRelated {
+                    seed,
+                    purpose: RelatedPurpose::Autoplay,
+                });
+            }
         }
+    }
+
+    /// Up to `n` tracks played before `seed` in the queue, then `seed` itself.
+    pub fn recent_seeds(&self, seed: &Track, n: usize) -> Vec<Track> {
+        let upto = self
+            .queue
+            .list
+            .iter()
+            .position(|t| t.id == seed.id)
+            .unwrap_or(0);
+        let mut out: Vec<Track> = self.queue.list[upto.saturating_sub(n)..upto]
+            .iter()
+            .filter(|t| t.source == seed.source)
+            .cloned()
+            .collect();
+        out.push(seed.clone());
+        out
+    }
+
+    /// Asks for autoplay tracks as soon as the queue gets short, instead of when it runs out.
+    pub(super) fn top_up_autoplay(&mut self, fx: &mut Vec<Effect>) {
+        let Some(current) = self.queue.current() else {
+            return;
+        };
+        let left = self.queue.list.len() as isize - self.queue.index - 1;
+        if !self.settings.autoplay
+            || self.fetching_more
+            || self.settings.repeat != Repeat::Off
+            || left >= AUTOPLAY_LOW_WATER
+            || !matches!(
+                current.source,
+                Source::SoundCloud | Source::YouTube | Source::Monochrome
+            )
+        {
+            return;
+        }
+        self.fetching_more = true;
+        fx.push(Effect::FetchRelated {
+            seed: current.clone(),
+            purpose: RelatedPurpose::Autoplay,
+        });
+    }
+
+    /// Whether Spotify's player should be warmed up now: a non-Spotify track is near its end
+    /// and a Spotify track comes next. Starting it takes about a second, so this hides that.
+    pub fn spotify_due_soon(&self) -> bool {
+        const WARM_UP_SECS: f64 = 8.0;
+        let playing_other = self
+            .track
+            .as_ref()
+            .is_some_and(|t| t.source != Source::Spotify);
+        let left = self.time.duration - self.time.current;
+        playing_other
+            && self.playing
+            && self.time.duration > 0.0
+            && left < WARM_UP_SECS
+            && self
+                .next_playable(1)
+                .and_then(|i| self.queue.list.get(i))
+                .is_some_and(|t| t.source == Source::Spotify)
+    }
+
+    /// Tracks copied in from Spotify's up-next list.
+    pub fn spotify_tail(&self) -> &[TrackId] {
+        &self.spotify_tail
+    }
+
+    /// Whether Spotify decides what follows: a Spotify track is playing and nothing after it
+    /// here is Mosaic's own (only what was copied from Spotify's up-next list).
+    pub fn spotify_led(&self) -> bool {
+        let Some(current) = self.queue.current() else {
+            return false;
+        };
+        if current.source != Source::Spotify
+            || self.settings.repeat != Repeat::Off
+            || self.settings.shuffle
+        {
+            return false;
+        }
+        let after = self.queue.index as usize + 1;
+        self.queue.list.get(after..).is_some_and(|rest| {
+            rest.iter().all(|t| self.spotify_tail.contains(&t.id))
+        })
     }
 
     /// Spotify carried on into `track` (autoplay, or a skip from another device). With nothing
@@ -795,8 +898,18 @@ impl PlayerController {
         if current != Some(from) || self.settings.repeat != Repeat::Off {
             return;
         }
-        if self.next_playable(1).is_some() {
+        let led = self.spotify_led();
+        if !led && self.next_playable(1).is_some() {
             return;
+        }
+        if led {
+            // What was copied from Spotify's old up-next list may be stale now.
+            let after = self.queue.index as usize + 1;
+            if self.queue.list.get(after).is_some_and(|t| t.uri == track.uri) {
+                return;
+            }
+            self.queue.list.truncate(after);
+            self.spotify_tail.clear();
         }
         let _ = self.queue.play_next(&track);
         self.queue_dirty = true;
@@ -891,10 +1004,19 @@ impl PlayerController {
             RelatedPurpose::Radio => self.finish_radio(seed, result, now, fx),
             RelatedPurpose::Autoplay => {
                 self.fetching_more = false;
+                let go = std::mem::take(&mut self.continue_on_related);
                 if self.queue.current().map(|t| &t.id) != Some(&seed.id) {
                     return;
                 }
-                let Ok(related) = result else { return };
+                let related = match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if go {
+                            fx.push(Effect::Toast(e));
+                        }
+                        return;
+                    }
+                };
                 let similar: Vec<Track> = filter_along(related, Some(&seed))
                     .into_iter()
                     .filter(|t| !self.queue.list.iter().any(|x| x.id == t.id))
@@ -902,12 +1024,15 @@ impl PlayerController {
                 let Some(first) = similar.first().cloned() else {
                     return;
                 };
+                // Added right away, so what's coming can be seen (and changed) in the queue.
                 let at = self.queue.list.len();
+                self.auto_tail.extend(similar.iter().map(|t| t.id.clone()));
                 self.queue.list.extend(similar);
-                self.queue.index = at as isize;
                 self.queue_dirty = true;
-                self.load(&first, LoadOpts::default(), false, now, fx);
-                fx.push(Effect::Toast("Autoplay: similar tracks added".into()));
+                if go && !self.playing && !self.loading {
+                    self.queue.index = at as isize;
+                    self.load(&first, LoadOpts::default(), false, now, fx);
+                }
             }
         }
     }

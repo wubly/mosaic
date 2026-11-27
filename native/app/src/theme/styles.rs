@@ -257,6 +257,38 @@ pub fn error_text(p: Palette) -> impl Fn(&Theme) -> text::Style {
 }
 
 /// 10 px scrollbar, thumb `#ffffff1f`, radius 5.
+/// A carousel's sideways scrollbar: hidden until the pointer is over the row, faint then, and
+/// solid while it's grabbed or hovered itself.
+pub fn carousel_scrollbar(p: Palette) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style {
+    move |theme, status| {
+        let mut style = scrollable::default(theme, status);
+        let alpha = match status {
+            scrollable::Status::Active { .. } => 0.0,
+            scrollable::Status::Hovered {
+                is_horizontal_scrollbar_hovered: true,
+                ..
+            }
+            | scrollable::Status::Dragged {
+                is_horizontal_scrollbar_dragged: true,
+                ..
+            } => 0.45,
+            _ => 0.16,
+        };
+        let rail = scrollable::Rail {
+            background: None,
+            border: Border::default(),
+            scroller: scrollable::Scroller {
+                background: Background::Color(crate::theme::alpha(p.on_surface, alpha)),
+                border: border::rounded(3),
+            },
+        };
+        style.vertical_rail = rail;
+        style.horizontal_rail = rail;
+        style.container = container::Style::default();
+        style
+    }
+}
+
 pub fn scrollbar(_: Palette) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style {
     move |theme, status| {
         let mut style = scrollable::default(theme, status);

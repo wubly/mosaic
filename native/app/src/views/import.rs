@@ -19,9 +19,9 @@ const CONCURRENCY: usize = 4;
 const MATCH_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BAD_URL: &str = "That doesn’t look like a Spotify playlist or album link.";
 pub const UNREADABLE: &str =
-    "Couldn’t read that playlist. If it’s private or has more than 100 tracks, connect Spotify in Settings → Beta and try again.";
+    "Couldn’t read that playlist. If it’s private or has more than 100 tracks, connect Spotify in the Spotify tab and try again.";
 pub const TRUNCATED: &str =
-    "Only the first 100 tracks could be read. Connect Spotify in Settings → Beta to import playlists over 100 tracks.";
+    "Only the first 100 tracks could be read. Connect Spotify in the Spotify tab to import playlists over 100 tracks.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Step {
@@ -273,7 +273,7 @@ impl App {
             );
         }
         col.push(
-            text("Works with public playlists of up to 100 tracks right away. Connect Spotify in Settings → Beta to import longer or private playlists.")
+            text("Works with public playlists of up to 100 tracks right away. Connect Spotify in the Spotify tab to import longer or private playlists.")
                 .size(12)
                 .color(p.on_surface_variant),
         )

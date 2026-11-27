@@ -5,6 +5,7 @@ pub struct Args {
     pub version: bool,
     pub data_dir: Option<PathBuf>,
     pub reset_window: bool,
+    pub youtube_signin: bool,
     pub debug_theme: Option<String>,
     pub debug_screenshot: Option<PathBuf>,
     pub debug_view: Option<String>,
@@ -21,6 +22,7 @@ impl Args {
             match arg.as_str() {
                 "--version" | "-V" => out.version = true,
                 "--reset-window" => out.reset_window = true,
+                "--youtube-signin" => out.youtube_signin = true,
                 "--debug-screenshot" => out.debug_screenshot = it.next().map(PathBuf::from),
                 "--debug-view" => out.debug_view = it.next(),
                 "--debug-import" => out.debug_import = it.next(),
@@ -53,6 +55,12 @@ mod tests {
         assert!(a.reset_window);
         assert_eq!(a.files, [PathBuf::from("a.mp3")]);
         assert!(parse("--version").version);
+    }
+
+    #[test]
+    fn parses_youtube_signin() {
+        assert!(parse("--youtube-signin").youtube_signin);
+        assert!(!parse("--version").youtube_signin);
     }
 
     #[test]

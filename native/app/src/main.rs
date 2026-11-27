@@ -19,6 +19,7 @@ mod theme;
 mod video;
 mod views;
 mod widgets;
+mod youtube_signin;
 
 use std::sync::{Arc, Mutex};
 
@@ -33,6 +34,10 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "spotify", any(windows, target_os = "macos")))]
     if std::env::args().nth(1).as_deref() == Some("--spotify-host") {
         return spotify_host::run();
+    }
+    // The visible YouTube Music sign-in window Mosaic starts for itself.
+    if std::env::args().nth(1).as_deref() == Some("--youtube-signin") {
+        return youtube_signin::run();
     }
     // Both `ring` and `aws-lc-rs` are linked, so rustls cannot choose one itself.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

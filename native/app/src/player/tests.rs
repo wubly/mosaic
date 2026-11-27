@@ -56,6 +56,13 @@ impl Harness {
         self.resolve(&fx, Ok(stream()))
     }
 
+    /// Like `start`, but returns what the play request itself asked for.
+    fn start_fx(&mut self, target: &Track, list: &[Track]) -> Vec<Effect> {
+        let fx = self.send(PlayerInput::Play(target.clone(), Some(list.to_vec())));
+        self.resolve(&fx, Ok(stream()));
+        fx
+    }
+
     fn resolve(&mut self, fx: &[Effect], result: Result<Stream, String>) -> Vec<Effect> {
         let gen = fx
             .iter()
@@ -392,9 +399,9 @@ fn loading_an_unavailable_track_reports_why() {
     let mut h = Harness::new();
     let fx = h.send(PlayerInput::Play(track(2, "youtube", 100), None));
     assert!(resolves(&fx).is_empty());
-    assert_eq!(h.c.error, "Turn on YouTube in Settings → Beta");
+    assert_eq!(h.c.error, "YouTube isn’t available right now");
     h.send(PlayerInput::Play(track(3, "spotify", 100), None));
-    assert_eq!(h.c.error, "Connect Spotify in Settings → Beta");
+    assert_eq!(h.c.error, "Connect Spotify in the Spotify tab");
     h.send(PlayerInput::Play(track(4, "mystery", 100), None));
     assert_eq!(h.c.error, "Not available in this version");
 }
@@ -408,33 +415,55 @@ fn youtube_tracks_play_when_enabled() {
     assert_eq!(resolves(&h.send(PlayerInput::Next)), [2]);
 }
 
+fn related_fetch(fx: &[Effect]) -> Option<(Track, RelatedPurpose)> {
+    fx.iter().find_map(|e| match e {
+        Effect::FetchRelated { seed, purpose } => Some((seed.clone(), *purpose)),
+        _ => None,
+    })
+}
+
 #[test]
-fn autoplay_continues_with_similar_tracks_at_the_end() {
+fn autoplay_queues_similar_tracks_as_soon_as_the_last_track_starts() {
     let mut h = Harness::new();
-    h.start(&sc(2), &list(&[1, 2]));
-    let fx = h.ended();
-    let seed = match &fx[..] {
-        [Effect::FetchRelated { seed, purpose }, ..] => {
-            assert_eq!(*purpose, RelatedPurpose::Autoplay);
-            seed.clone()
-        }
-        other => panic!("expected a related fetch, got {other:?}"),
-    };
-    assert!(
-        h.ended()
-            .iter()
-            .all(|e| !matches!(e, Effect::FetchRelated { .. })),
-        "only one fetch at a time"
-    );
+    let fx = h.start_fx(&sc(2), &list(&[1, 2]));
+    let (seed, purpose) = related_fetch(&fx).expect("a related fetch when the queue is short");
+    assert_eq!(purpose, RelatedPurpose::Autoplay);
     let fx = h.send(PlayerInput::Related {
         purpose: RelatedPurpose::Autoplay,
         seed,
         result: Ok(list(&[2, 10, 11])),
     });
-    assert_eq!(resolves(&fx), [10]);
-    assert_eq!(toasts(&fx), ["Autoplay: similar tracks added"]);
+    // Queued for review, not played yet: song 2 is still on.
+    assert!(resolves(&fx).is_empty());
     assert_eq!(h.c.queue.list.len(), 4);
+    assert_eq!(h.c.queue.index, 1);
+    assert_eq!(h.c.auto_tail.len(), 2);
+    assert_eq!(resolves(&h.ended()), [10]);
+}
+
+#[test]
+fn a_queue_that_runs_out_mid_fetch_carries_on_when_autoplay_answers() {
+    let mut h = Harness::new();
+    let fx = h.start_fx(&sc(2), &list(&[1, 2]));
+    let (seed, _) = related_fetch(&fx).unwrap();
+    assert!(
+        related_fetch(&h.ended()).is_none(),
+        "only one fetch at a time"
+    );
+    let fx = h.send(PlayerInput::Related {
+        purpose: RelatedPurpose::Autoplay,
+        seed,
+        result: Ok(list(&[10, 11])),
+    });
+    assert_eq!(resolves(&fx), [10]);
     assert_eq!(h.c.queue.index, 2);
+}
+
+#[test]
+fn a_long_queue_fetches_nothing_until_it_gets_short() {
+    let mut h = Harness::new();
+    let fx = h.start_fx(&sc(1), &list(&[1, 2, 3, 4]));
+    assert!(related_fetch(&fx).is_none());
 }
 
 #[test]
@@ -460,28 +489,24 @@ fn autoplay_continues_from_a_youtube_track_too() {
     let mut h = Harness::new();
     h.send(PlayerInput::YoutubeAvailable(true));
     let yt = track(1, "youtube", 200);
-    h.start(&yt, std::slice::from_ref(&yt));
-    match &h.ended()[..] {
-        [Effect::FetchRelated { seed, purpose }, ..] => {
-            assert_eq!(*purpose, RelatedPurpose::Autoplay);
-            assert_eq!(seed.source, mosaic_core::model::Source::YouTube);
-        }
-        other => panic!("expected a related fetch, got {other:?}"),
-    }
+    let (seed, purpose) = related_fetch(&h.start_fx(&yt, std::slice::from_ref(&yt))).unwrap();
+    assert_eq!(purpose, RelatedPurpose::Autoplay);
+    assert_eq!(seed.source, mosaic_core::model::Source::YouTube);
 }
 
 #[test]
 fn autoplay_and_radio_continue_from_a_monochrome_track() {
     let mut h = Harness::new();
     let mono = track(1, "monochrome", 200);
-    h.start(&mono, std::slice::from_ref(&mono));
-    match &h.ended()[..] {
-        [Effect::FetchRelated { seed, purpose }, ..] => {
-            assert_eq!(*purpose, RelatedPurpose::Autoplay);
-            assert_eq!(seed.source, mosaic_core::model::Source::Monochrome);
-        }
-        other => panic!("expected a related fetch, got {other:?}"),
-    }
+    let fx = h.start_fx(&mono, std::slice::from_ref(&mono));
+    let (seed, purpose) = related_fetch(&fx).unwrap();
+    assert_eq!(purpose, RelatedPurpose::Autoplay);
+    assert_eq!(seed.source, mosaic_core::model::Source::Monochrome);
+    h.send(PlayerInput::Related {
+        purpose,
+        seed,
+        result: Err("nothing".into()),
+    });
     let fx = h.send(PlayerInput::StartRadio(mono));
     assert!(fx.iter().any(|e| matches!(
         e,
@@ -1150,8 +1175,28 @@ fn spotifys_up_next_fills_an_empty_queue_and_skipping_forward_plays_it() {
     h.start(&a, std::slice::from_ref(&a));
     h.send(up_next("spotify:track:1", &[2, 3]));
     assert_eq!(queue_ids(&h), ["song 1", "song 2", "song 3"]);
+    assert!(h.c.spotify_led());
+    // Spotify leads, so skipping forward is Spotify's own skip, which the player then follows.
     let fx = h.send(PlayerInput::Next);
-    assert_eq!(resolves(&fx), [2]);
+    assert!(fx.iter().any(|e| matches!(e, Effect::SpotifySkip)));
+    let fx = h.send(PlayerInput::AdoptSpotify {
+        from: "spotify:track:1".into(),
+        track: spotify(2),
+    });
+    assert!(resolves(&fx).is_empty(), "song 2 is already next");
+    assert_eq!(resolves(&h.ended()), [2]);
+}
+
+#[test]
+fn a_track_queued_here_takes_the_lead_back_from_spotify() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    h.send(up_next("spotify:track:1", &[2, 3]));
+    h.send(PlayerInput::PlayNext(sc(9)));
+    assert!(!h.c.spotify_led());
+    assert_eq!(resolves(&h.send(PlayerInput::Next)), [9]);
 }
 
 #[test]
