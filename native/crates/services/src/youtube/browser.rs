@@ -1010,6 +1010,8 @@ mod tests {
             .all(|l| l.starts_with("user_pref(") && l.ends_with(");")));
     }
 
+    // Flatpak is Linux-only and `home()` reads `HOME`, which Windows doesn't set.
+    #[cfg(unix)]
     #[test]
     fn flatpak_profiles_live_in_the_apps_own_folder() {
         let b = Browser {
