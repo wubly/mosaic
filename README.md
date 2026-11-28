@@ -10,7 +10,6 @@ a desktop music player for soundcloud and your own files. native rust (iced), ma
 - crossfade, gapless-ish transitions, equalizer, speed with pitch kept, sleep timer, mini player, discord rich presence
 - colors follow the album art
 - media keys and the system media widget through mpris (linux), smtc (windows) and now playing (macos)
-- beta (settings > beta): spotify browsing and playback, artist and album pages, genius lyrics
 
 <table>
   <tr>
@@ -45,17 +44,12 @@ you need a recent stable rust. on linux also `pkg-config`, alsa headers (`libaso
 
 ## what changed from the electron version
 
-- **youtube is back, as a beta option.** it plays through youtube's own player api instead of a browser embed, so no browser is needed. turn on beta features in settings, then pick youtube in discover's service dropdown or play saved youtube tracks directly. search (youtube music) and similar-song autoplay need no account; connect google in settings to also browse your liked videos and playlists
-- **spotify playback now uses librespot**, an unofficial client. it needs premium and signs in with spotify's own login; browsing, search and playlist import still use your own client id. the widevine / castlabs electron setup is no longer needed
-- importing a spotify playlist reads the public embed (first 100 tracks). connect spotify in settings > beta to import longer or private ones
-- low memory mode and the chromium performance options are gone (nothing to tune)
-- the live backdrop blur is replaced by a pre-blurred copy of the album art, and lyric lines fade instead of blur
+- doesnt use 235gb of ram
+- doesnt use 232% cpu
 
 `native/DECISIONS.md` lists every other deliberate difference.
 
 ## notes
 
-- soundcloud access is unofficial and can break. personal use only.
-- spotify playback through librespot is unofficial and may violate spotify's terms. use at your own risk.
-- not affiliated with soundcloud, spotify, discord or lrclib.
 - dont bug report, jsut make pr :3
+- #claude wrote this
