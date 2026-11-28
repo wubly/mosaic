@@ -53,3 +53,4 @@ you need a recent stable rust. on linux also `pkg-config`, alsa headers (`libaso
 
 - dont bug report, jsut make pr :3
 - #claude wrote this
+- credits to [monochrome](https://monochrome.st) as a service
