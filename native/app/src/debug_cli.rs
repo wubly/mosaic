@@ -7,6 +7,16 @@ use mosaic_services::lyrics::service::LyricsArgs;
 use mosaic_services::soundcloud::client_types::StreamKind;
 use mosaic_services::Services;
 
+fn parse_source(name: &str) -> Result<mosaic_core::model::Source> {
+    use mosaic_core::model::Source;
+    Ok(match name {
+        "yt" | "youtube" => Source::YouTube,
+        "sc" | "soundcloud" => Source::SoundCloud,
+        "mono" | "monochrome" => Source::Monochrome,
+        other => bail!("unknown service {other} (yt, sc, mono)"),
+    })
+}
+
 fn services(dirs: Dirs) -> Result<Services> {
     let config = Arc::new(Mutex::new(load_config(&dirs)));
     Services::new(dirs, config)
@@ -37,6 +47,127 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
     let services = services(dirs)?;
 
     match name {
+        // The whole Google sign-in, as the Account tab runs it.
+        "yt-signin" => match services.yt_sign_in().await? {
+            Some(account) => println!(
+                "signed in as {} ({})",
+                account.name, account.email_or_handle
+            ),
+            None => println!("not signed in (window closed first)"),
+        },
+        // The tabs a Firefox session file (`recovery.jsonlz4`) holds.
+        "firefox-tabs" => {
+            use mosaic_services::youtube::browser;
+            let data = std::fs::read(arg(1)?)?;
+            let json = browser::mozlz4(&data).context("not a mozLz4 file")?;
+            let session: serde_json::Value = serde_json::from_slice(&json)?;
+            for url in browser::firefox_tab_urls(&session) {
+                println!("{url}");
+            }
+        }
+        "yt-browser-probe" => {
+            use mosaic_services::youtube::browser;
+            let found = browser::find();
+            for b in &found {
+                println!(
+                    "found {} ({:?}) {} {:?}",
+                    b.name,
+                    b.engine,
+                    b.program.display(),
+                    b.prefix
+                );
+            }
+            let b = found.first().context("no browser found")?;
+            let dir = std::env::temp_dir().join("mosaic-browser-probe");
+            println!("{}", browser::probe(services.http(), b, &dir).await?);
+        }
+        // Plays the first `count` song hits of a service's search through the real controller,
+        // the way a click in search results does (one track, then autoplay).
+        "search-play" => {
+            let source = parse_source(arg(1)?)?;
+            let count = cmd.get(3).map_or(Ok(1), |v| v.parse::<usize>())?;
+            let found = services.search_all(&source, arg(2)?).await?;
+            let tracks: Vec<_> = found.tracks.into_iter().take(count).collect();
+            for t in &tracks {
+                println!("queued {} - {} ({}ms)", t.artist, t.title, t.duration);
+            }
+            queue_play(services, tracks, 0.0).await?;
+        }
+        // What autoplay queues after a service's first hit for a query (no playback).
+        "autoplay" => {
+            let seed = if arg(1)? == "sp" {
+                let r = services
+                    .spotify_search(arg(2)?, mosaic_services::Services::SEARCH_LIMIT)
+                    .await?;
+                r.tracks.first().context("no results")?.clone()
+            } else {
+                let source = parse_source(arg(1)?)?;
+                let found = services.search_all(&source, arg(2)?).await?;
+                found.tracks.first().context("no results")?.clone()
+            };
+            println!("seed: {} - {}", seed.artist, seed.title);
+            let list = services.autoplay(std::slice::from_ref(&seed), 50).await?;
+            println!("{} tracks", list.len());
+            for t in list.iter().take(8) {
+                println!("  {} - {}", t.artist, t.title);
+            }
+        }
+        "catalog-search" => {
+            let source = parse_source(arg(1)?)?;
+            let found = services.search_all(&source, arg(2)?).await?;
+            for t in found.tracks.iter().take(5) {
+                println!("song\t{} - {}\t{}ms", t.artist, t.title, t.duration);
+            }
+            for c in found
+                .artists
+                .iter()
+                .chain(&found.albums)
+                .chain(&found.playlists)
+            {
+                println!(
+                    "{:?}\t{}\t{}\t{}\t{}",
+                    c.kind, c.id, c.title, c.subtitle, c.image
+                );
+            }
+        }
+        "catalog-open" => {
+            use mosaic_services::catalog::{Card, CardKind};
+            let kind = match arg(2)? {
+                "artist" => CardKind::Artist,
+                "album" => CardKind::Album,
+                "playlist" => CardKind::Playlist,
+                other => bail!("unknown kind {other}"),
+            };
+            let card = Card {
+                source: parse_source(arg(1)?)?,
+                kind,
+                id: arg(3)?.to_string(),
+                title: String::new(),
+                subtitle: String::new(),
+                image: String::new(),
+            };
+            let page = services.open_card(&card).await?;
+            println!(
+                "{} | {} | {}",
+                page.card.title, page.card.subtitle, page.card.image
+            );
+            if let Some(a) = &page.artist {
+                println!("by {} ({})", a.title, a.id);
+            }
+            for t in &page.tracks {
+                println!(
+                    "song\t{} - {} [{}]\t{}ms\t{}",
+                    t.artist,
+                    t.title,
+                    t.album,
+                    t.duration,
+                    !t.artwork.is_empty()
+                );
+            }
+            for c in &page.albums {
+                println!("album\t{}\t{}\t{}", c.id, c.title, c.subtitle);
+            }
+        }
         "sc-search" => {
             for t in services.sc_search(arg(1)?, 30).await? {
                 println!(
@@ -255,10 +386,19 @@ async fn dispatch(dirs: Dirs, cmd: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The debug players start muted so test runs stay silent; `MOSAIC_DEBUG_VOLUME=0.8` to listen.
+fn debug_volume() -> f64 {
+    std::env::var("MOSAIC_DEBUG_VOLUME")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0)
+}
+
 fn play(source: mosaic_audio::SourceSpec, start_at: f64) -> Result<()> {
     use mosaic_audio::{Command, DeckId, Engine, Event};
 
     let engine = Engine::start()?;
+    engine.send(Command::SetVolume(debug_volume() as f32));
     engine.send(Command::Load {
         deck: DeckId::A,
         gen: 1,
@@ -322,6 +462,7 @@ async fn queue_play(
 
     let mut controller = PlayerController::new(Settings {
         crossfade,
+        volume: debug_volume(),
         ..Settings::default()
     });
     for effect in controller.sync_engine() {
@@ -334,6 +475,7 @@ async fn queue_play(
     let mut pending = vec![
         PlayerInput::Play(first, Some(tracks)),
         PlayerInput::SpotifyAvailable(cfg!(feature = "spotify")),
+        PlayerInput::YoutubeAvailable(true),
     ];
     let mut outstanding = 0usize;
     let mut last_print = -10.0;
@@ -379,7 +521,16 @@ async fn queue_play(
             PlayerInput::Engine(mosaic_audio::Event::Ended { .. }) => done = true,
             _ => {}
         }
-        for effect in controller.handle(input, Instant::now()) {
+        let was_related = matches!(input, PlayerInput::Related { .. });
+        let effects = controller.handle(input, Instant::now());
+        if was_related {
+            println!(
+                "queue: {} tracks, at {}",
+                controller.queue.list.len(),
+                controller.queue.index
+            );
+        }
+        for effect in effects {
             match effect {
                 Effect::Engine(c) => engine.send(c),
                 Effect::ResolveStream {
@@ -402,7 +553,7 @@ async fn queue_play(
                     let (services, tx) = (services.clone(), tx.clone());
                     tokio::spawn(async move {
                         let result = services
-                            .autoplay(std::slice::from_ref(&seed), 40)
+                            .autoplay(std::slice::from_ref(&seed), 50)
                             .await
                             .map_err(|e| e.to_string());
                         let _ = tx.send(PlayerInput::Related {

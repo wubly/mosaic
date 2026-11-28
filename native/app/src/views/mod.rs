@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod common;
 pub mod discover;
 pub mod import;
@@ -32,7 +33,10 @@ impl App {
     pub(crate) fn art_sized(&self, src: &str, w: f32, h: f32, radius: f32) -> Element<'_, Message> {
         let p = self.palette();
         let size = w.max(h);
-        match self.images.art(src, (size * 2.0).ceil() as u32, self.now) {
+        match self
+            .images
+            .art(src, (size * self.scale).ceil() as u32, self.now)
+        {
             Some((handle, opacity)) => image(handle)
                 .width(w)
                 .height(h)

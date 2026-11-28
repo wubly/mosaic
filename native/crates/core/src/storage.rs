@@ -343,7 +343,7 @@ mod tests {
             "days": {"2026-11-22": 1830, "2026-11-21": 60.5},
             "sources": ["/home/u/Music"],
             "settings": {"autoplay": true, "crossfade": 6, "fadePause": true, "skipSilence": true, "ytVideo": false,
-                "leveling": false, "eqOn": true, "eqGains": [0, 1.5, -2, 0, 3], "eqPreset": "Flat", "speed": 1, "volume": 0.8,
+                "leveling": false, "normalize": true, "mixedSources": false, "eqOn": true, "eqGains": [0, 1.5, -2, 0, 3], "eqPreset": "Flat", "speed": 1, "volume": 0.8,
                 "shuffle": false, "repeat": "all", "lyricsOpen": true, "presence": true, "barHeight": 100, "sideWidth": 360,
                 "futureSetting": "kept"},
             "session": {"queue": [sc], "index": 0, "position": 42.3},

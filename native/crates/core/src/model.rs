@@ -191,6 +191,11 @@ pub struct Settings {
     pub skip_silence: bool,
     pub yt_video: bool,
     pub leveling: bool,
+    /// Play every track at the same loudness, whatever service it comes from.
+    pub normalize: bool,
+    /// Experimental: autoplay takes a song from YouTube Music when the playing track's service
+    /// doesn't have it.
+    pub mixed_sources: bool,
     pub eq_on: bool,
     #[serde(serialize_with = "ser_gains")]
     pub eq_gains: [f64; 5],
@@ -220,6 +225,8 @@ impl Default for Settings {
             skip_silence: true,
             yt_video: false,
             leveling: false,
+            normalize: true,
+            mixed_sources: false,
             eq_on: false,
             eq_gains: [0.0; 5],
             eq_preset: "Flat".into(),

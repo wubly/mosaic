@@ -191,9 +191,7 @@ impl App {
         };
         let head = row![
             column![
-                text(title)
-                    .size(16)
-                    .wrapping(text::Wrapping::None),
+                text(title).size(16).wrapping(text::Wrapping::None),
                 text(artist)
                     .size(13)
                     .color(p.on_surface_variant)
@@ -202,17 +200,25 @@ impl App {
             .spacing(2)
             .width(Length::Fill)
             .clip(true),
-            corner(Icon::OpenInFull, "Back to the full window (I)", Message::ToggleMini),
+            corner(
+                Icon::OpenInFull,
+                "Back to the full window (I)",
+                Message::ToggleMini
+            ),
             corner(Icon::Close, "Close", Message::CloseRequested),
         ]
         .spacing(2)
         .align_y(Alignment::Start);
         let card = row![
             art,
-            column![head, Space::new().height(Length::Fill), self.mini_controls(p)]
-                .spacing(4)
-                .height(Length::Fill)
-                .width(Length::Fill),
+            column![
+                head,
+                Space::new().height(Length::Fill),
+                self.mini_controls(p)
+            ]
+            .spacing(4)
+            .height(Length::Fill)
+            .width(Length::Fill),
         ]
         .spacing(16)
         .align_y(Alignment::Center);

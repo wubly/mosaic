@@ -58,6 +58,13 @@ pub struct Account {
 pub struct Session {
     pub cookies: String,
     pub account: Account,
+    /// The web player's visitor id (`VISITOR_DATA`), sent back with each request.
+    #[serde(default)]
+    pub visitor_data: Option<String>,
+    /// Which of the Google account's channels to act as (`DATASYNC_ID`), so a brand account
+    /// sees its own library.
+    #[serde(default)]
+    pub data_sync_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -214,6 +221,16 @@ impl Services {
     /// Signs in with the cookies a Google sign-in left behind (see [`SIGN_IN_URL`]). The cookies
     /// are checked against YouTube Music first and only kept when they are a live session.
     pub async fn yt_cookie_login(&self, cookies: &str) -> Result<Account> {
+        self.yt_session_login(cookies, None, None).await
+    }
+
+    /// `yt_cookie_login` with the page config the sign-in browser read.
+    pub async fn yt_session_login(
+        &self,
+        cookies: &str,
+        visitor_data: Option<String>,
+        data_sync_id: Option<String>,
+    ) -> Result<Account> {
         let cookies = normalize_cookies(cookies);
         if sapisid_of(&cookies).is_none() {
             bail!("Those cookies have no Google sign-in (SAPISID is missing)");
@@ -226,6 +243,8 @@ impl Services {
         let session = Session {
             cookies,
             account: account.clone(),
+            visitor_data,
+            data_sync_id,
         };
         let _ = write_json_atomic(&self.inner.dirs.file(SESSION_FILE), &session);
         *self
@@ -243,6 +262,20 @@ impl Services {
             *s = None;
         }
         let _ = std::fs::remove_file(self.inner.dirs.file(SESSION_FILE));
+    }
+
+    /// The signed-in session's (visitor id, account id), as the sign-in found them.
+    pub(crate) fn yt_session_ids(&self) -> (Option<String>, Option<String>) {
+        self.inner
+            .youtube
+            .session
+            .lock()
+            .ok()
+            .and_then(|s| {
+                s.as_ref()
+                    .map(|s| (s.visitor_data.clone(), s.data_sync_id.clone()))
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn yt_cookies(&self) -> Option<String> {

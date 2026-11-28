@@ -73,6 +73,9 @@ pub enum Message {
     UpdateTimer,
     Spotify(crate::views::spotify::Msg),
     Youtube(crate::views::youtube::Msg),
+    Catalog(crate::views::catalog::Msg),
+    /// Open the playing track's artist page (the artist name in the player bar).
+    GoPlayingArtist,
     Import(crate::views::import::Msg),
     Lyrics(crate::views::lyrics::Msg),
     CloseNowPlaying,
@@ -107,6 +110,15 @@ pub enum Message {
     Frame(Instant),
     Tick,
     PollImages,
+    /// The next track's stream came in early (see `App::prefetched`).
+    Prefetched(
+        mosaic_core::model::TrackId,
+        Result<crate::player::Stream, String>,
+    ),
+    /// The window's display scale (at start, and when it moves to another screen).
+    Rescaled(f32),
+    /// Lets go of artwork nothing has drawn for a while.
+    TrimImages,
     ToastTick,
     WindowResized(Size),
     CloseRequested,
@@ -160,6 +172,8 @@ pub(crate) struct Ui {
     pub(crate) hidden: bool,
     pub(crate) spotify: crate::views::spotify::State,
     pub(crate) youtube: crate::views::youtube::State,
+    /// Artist, album and playlist pages opened from search or a library.
+    pub(crate) catalog: crate::views::catalog::State,
     pub(crate) import: crate::views::import::State,
     pub(crate) lyrics: crate::views::lyrics::State,
     pub(crate) library: crate::views::library::State,
@@ -212,6 +226,11 @@ pub struct App {
     pub(crate) pos_at: Instant,
     pub(crate) epoch: Instant,
     pub(crate) debug_screenshot: Option<std::path::PathBuf>,
+    /// The window's display scale; artwork is decoded at this many pixels per logical pixel.
+    pub(crate) scale: f32,
+    /// The next track's stream, resolved before the playing one ends so the change of track
+    /// doesn't wait on the network: (track, when it was asked for, the stream once it's in).
+    pub(crate) prefetched: Option<Prefetch>,
 }
 
 /// The Win32 HWND behind an iced window, for SMTC. `None` everywhere else.
@@ -295,6 +314,9 @@ impl App {
             pos_at: now,
             epoch: now,
             debug_screenshot: flags.debug_screenshot,
+            // Until the window says otherwise; 2× is sharp everywhere, just larger than needed.
+            scale: 2.0,
+            prefetched: None,
         };
         if let Some(v) = &flags.debug_view {
             app.ui.view = Some(match v.as_str() {
@@ -343,6 +365,7 @@ impl App {
             .map(Message::PlatformReady);
         let mut tasks = vec![
             open,
+            window::scale_factor(main).map(Message::Rescaled),
             app.discover_boot(),
             app.scan(),
             app.spotify_boot(),
@@ -369,14 +392,70 @@ impl App {
             app.ui.import.url = url;
             tasks.push(app.on_import(crate::views::import::Msg::Start));
         }
+        // `search:<view>:<query>` and `open:<view>:<artist|album|playlist>:<id>` for screenshots
+        // of a service's search or of a catalog page.
+        if let Some(v) = flags.debug_view.as_deref() {
+            let parts: Vec<&str> = v.splitn(4, ':').collect();
+            let view = |name: &str| match name {
+                "youtube" => View::YouTube,
+                "soundcloud" => View::SoundCloud,
+                "monochrome" => View::Monochrome,
+                _ => View::Spotify,
+            };
+            match parts.as_slice() {
+                ["search", name, query] => {
+                    let view = view(name);
+                    app.ui.view = Some(view);
+                    if let Some(service) = crate::views::platform::service(view) {
+                        app.ui.discover.service = service;
+                    }
+                    tasks
+                        .push(app.on_discover(crate::views::discover::Msg::Query((*query).into())));
+                    tasks.push(app.on_discover(crate::views::discover::Msg::Submit));
+                }
+                ["open", name, kind, id] => {
+                    use mosaic_services::catalog::{Card, CardKind};
+                    let view = view(name);
+                    app.ui.view = Some(view);
+                    let source = match view {
+                        View::YouTube => mosaic_core::model::Source::YouTube,
+                        View::SoundCloud => mosaic_core::model::Source::SoundCloud,
+                        _ => mosaic_core::model::Source::Monochrome,
+                    };
+                    let kind = match *kind {
+                        "artist" => CardKind::Artist,
+                        "playlist" => CardKind::Playlist,
+                        _ => CardKind::Album,
+                    };
+                    tasks.push(app.on_catalog(crate::views::catalog::Msg::Open(Card {
+                        source,
+                        kind,
+                        id: (*id).into(),
+                        title: String::new(),
+                        subtitle: String::new(),
+                        image: String::new(),
+                    })));
+                }
+                _ => {}
+            }
+        }
         if flags.debug_view.as_deref() == Some("mini") {
             tasks.push(app.toggle_mini());
         }
         if app.debug_screenshot.is_some() {
             tasks.push(
-                Task::future(tokio::time::sleep(Duration::from_secs(
-                    if flags.debug_import.is_some() { 25 } else { 8 },
-                )))
+                Task::future(tokio::time::sleep(
+                    // `MOSAIC_SHOT_AFTER_MS` catches a moment mid-animation.
+                    std::env::var("MOSAIC_SHOT_AFTER_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .map(Duration::from_millis)
+                        .unwrap_or(Duration::from_secs(if flags.debug_import.is_some() {
+                            25
+                        } else {
+                            8
+                        })),
+                ))
                 .then(move |_| window::screenshot(main))
                 .map(Message::Screenshot),
             );
@@ -493,10 +572,41 @@ impl App {
             420.0,
             28.0,
         );
+        let prefetch = self.prefetch_next();
         if before != after {
-            return Task::batch([task, self.track_changed(), self.fetch_lyrics()]);
+            return Task::batch([task, prefetch, self.track_changed(), self.fetch_lyrics()]);
         }
-        task
+        Task::batch([task, prefetch])
+    }
+
+    /// Resolves the next track's stream in the last `PREFETCH_SECS` of the playing one, so the
+    /// change of track starts decoding straight away. Only for services whose stream is a fresh
+    /// signed link (SoundCloud, YouTube); Monochrome's needs no lookup and Spotify loads in its
+    /// own player.
+    fn prefetch_next(&mut self) -> Task<Message> {
+        let t = self.player.time;
+        let near_end =
+            self.player.playing && t.duration > 0.0 && t.duration - t.current < PREFETCH_SECS;
+        let Some(next) = self.player.up_next().filter(|_| near_end).cloned() else {
+            return Task::none();
+        };
+        if !matches!(
+            next.source,
+            mosaic_core::model::Source::SoundCloud | mosaic_core::model::Source::YouTube
+        ) || self
+            .prefetched
+            .as_ref()
+            .is_some_and(|(id, _, _)| *id == next.id)
+        {
+            return Task::none();
+        }
+        self.prefetched = Some((next.id.clone(), Instant::now(), None));
+        let services = self.services.clone();
+        let id = next.id.clone();
+        Task::perform(
+            async move { resolve_stream(&services, &next, 0.0).await },
+            move |result| Message::Prefetched(id.clone(), result),
+        )
     }
 
     /// Keeps the Spotify backend's play state and volume in step with the deck. Play/pause
@@ -624,6 +734,33 @@ impl App {
                     gen,
                     seek_to,
                 } => {
+                    // Resolved ahead of time and still fresh: start with it right away.
+                    let ready = match self.prefetched.take() {
+                        Some((id, at, Some(Ok(stream))))
+                            if id == track.id
+                                && seek_to == 0.0
+                                && at.elapsed() < PREFETCH_FRESH =>
+                        {
+                            Some(stream)
+                        }
+                        other => {
+                            // Still on its way for another track: keep waiting for it.
+                            if other
+                                .as_ref()
+                                .is_some_and(|(id, _, r)| *id != track.id && r.is_none())
+                            {
+                                self.prefetched = other;
+                            }
+                            None
+                        }
+                    };
+                    if let Some(stream) = ready {
+                        tasks.push(Task::done(Message::Player(PlayerInput::StreamResolved {
+                            gen,
+                            result: Ok(stream),
+                        })));
+                        continue;
+                    }
                     let services = self.services.clone();
                     tasks.push(Task::perform(
                         async move { resolve_stream(&services, &track, seek_to).await },
@@ -633,16 +770,26 @@ impl App {
                 Effect::FetchRelated { seed, purpose } => {
                     let services = self.services.clone();
                     let limit = match purpose {
-                        crate::player::RelatedPurpose::Autoplay => 40,
-                        crate::player::RelatedPurpose::Radio => 20,
+                        crate::player::RelatedPurpose::Autoplay => 50,
+                        crate::player::RelatedPurpose::Radio => 25,
                     };
                     // A few tracks before the seed steer the radio too (see `autoplay`).
                     let seeds = self.player.recent_seeds(&seed, 3);
+                    let mixed = self.settings().mixed_sources;
+                    // Songs heard lately are left out, so a session doesn't circle back to them.
+                    let heard: std::collections::HashSet<String> = self
+                        .store
+                        .history
+                        .iter()
+                        .take(RECENTLY_HEARD)
+                        .map(|h| mosaic_services::autoplay::song_key(&h.track))
+                        .collect();
                     tasks.push(Task::perform(
                         async move {
                             let result = services
-                                .autoplay(&seeds, limit as usize)
+                                .autoplay_mixed(&seeds, limit as usize, mixed)
                                 .await
+                                .map(|list| without_heard(list, &heard))
                                 .map_err(|e| e.to_string());
                             (seed, result)
                         },
@@ -898,6 +1045,14 @@ impl App {
             Message::External(External::Instance(line)) => self.on_instance(&line),
             Message::Spotify(msg) => self.on_spotify(msg),
             Message::Youtube(msg) => self.on_youtube(msg),
+            Message::Catalog(msg) => self.on_catalog(msg),
+            Message::GoPlayingArtist => match self.player.track.clone() {
+                Some(t) if t.artist_id.is_some() && self.has_pages(&t.source) => {
+                    let id = t.artist_id.clone().unwrap_or_default();
+                    self.open_track_page(&t, mosaic_services::catalog::CardKind::Artist, id)
+                }
+                _ => Task::none(),
+            },
             Message::Import(msg) => self.on_import(msg),
             Message::Lyrics(msg) => self.on_lyrics(msg),
             Message::CloseNowPlaying => {
@@ -1068,6 +1223,25 @@ impl App {
                 tick
             }
             Message::PollImages => Task::none(),
+            Message::Prefetched(id, result) => {
+                if let Some((want, _, slot)) = &mut self.prefetched {
+                    if *want == id {
+                        *slot = Some(result);
+                    }
+                }
+                Task::none()
+            }
+            Message::Rescaled(scale) => {
+                self.scale = scale.clamp(1.0, 4.0);
+                Task::none()
+            }
+            Message::TrimImages => {
+                if self.images.expire(self.now) > 0 {
+                    self.services.trim_image_memory();
+                    crate::trim_heap();
+                }
+                Task::none()
+            }
             Message::ToastTick => {
                 let now = self.now;
                 self.toasts.retain(|t| toast::visible(t.expires, now));
@@ -1235,10 +1409,25 @@ impl App {
             if self.ui.importing {
                 return self.on_import(crate::views::import::Msg::Close);
             }
+            let overlay = self.ui.tune.is_some()
+                || self.ui.menu.is_some()
+                || self.ui.now_playing
+                || self.ui.palette_open;
             self.ui.tune = None;
             self.ui.menu = None;
             self.ui.now_playing = false;
             self.ui.palette_open = false;
+            if overlay {
+                return Task::none();
+            }
+            // With nothing open, Esc steps back: out of an artist/album page, then out of a
+            // search, back to the page it covered.
+            if self.catalog_page(self.view_kind()).is_some() {
+                return self.on_catalog(crate::views::catalog::Msg::Back);
+            }
+            if !self.ui.discover.query.is_empty() {
+                return self.on_discover(crate::views::discover::Msg::Clear);
+            }
             return Task::none();
         }
         if captured || self.ui.palette_open || ctrl || modifiers.alt() {
@@ -1352,6 +1541,9 @@ impl App {
         }
         if self.drag.is_some() || self.ui.reorder.is_some() {
             subs.push(event::listen_with(drag_events));
+        }
+        if !self.images.is_empty() {
+            subs.push(iced::time::every(crate::images::TRIM_EVERY).map(|_| Message::TrimImages));
         }
         if self.images.has_wanted() {
             subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::PollImages));
@@ -1686,6 +1878,40 @@ impl App {
     }
 }
 
+/// A stream resolved ahead: the track, when it was asked for, the stream once it's in.
+pub(crate) type Prefetch = (
+    mosaic_core::model::TrackId,
+    Instant,
+    Option<Result<crate::player::Stream, String>>,
+);
+
+/// How long before a track ends the next one's stream is resolved.
+const PREFETCH_SECS: f64 = 30.0;
+/// A resolved stream older than this isn't used: signed links expire.
+const PREFETCH_FRESH: Duration = Duration::from_secs(5 * 60);
+
+/// How much of the history autoplay avoids repeating.
+const RECENTLY_HEARD: usize = 150;
+/// Autoplay keeps recently heard songs rather than come back with almost nothing.
+const MIN_FRESH: usize = 10;
+
+/// `list` without songs in `heard`, unless that leaves too few to be worth it.
+fn without_heard(
+    list: Vec<mosaic_core::model::Track>,
+    heard: &std::collections::HashSet<String>,
+) -> Vec<mosaic_core::model::Track> {
+    let fresh: Vec<_> = list
+        .iter()
+        .filter(|t| !heard.contains(&mosaic_services::autoplay::song_key(t)))
+        .cloned()
+        .collect();
+    if fresh.len() >= MIN_FRESH.min(list.len()) {
+        fresh
+    } else {
+        list
+    }
+}
+
 static CURSOR: AtomicU64 = AtomicU64::new(0);
 
 fn pack(p: Point) -> u64 {
@@ -1708,6 +1934,7 @@ fn key_events(event: iced::Event, status: event::Status, _: window::Id) -> Optio
             CURSOR.store(pack(position), Ordering::Relaxed);
             None
         }
+        iced::Event::Window(window::Event::Rescaled(scale)) => Some(Message::Rescaled(scale)),
         iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::FileHovered(true)),
         iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::FileHovered(false)),
         iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),

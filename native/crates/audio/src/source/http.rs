@@ -465,7 +465,11 @@ mod tests {
                     body.len() - 1,
                     body.len()
                 );
-                let send = if served < cuts { rest.len().min(100_000) } else { rest.len() };
+                let send = if served < cuts {
+                    rest.len().min(100_000)
+                } else {
+                    rest.len()
+                };
                 let _ = conn.write_all(&rest[..send]);
             }
         });

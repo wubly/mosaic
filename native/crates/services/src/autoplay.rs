@@ -18,6 +18,33 @@ use crate::Services;
 const CONCURRENCY: usize = 6;
 /// Most tracks by one artist in a batch, so a radio doesn't turn into one artist's discography.
 const PER_ARTIST: usize = 2;
+/// Radio order is shuffled within runs of this many, so the same song doesn't always bring the
+/// same queue while what's closest still comes first.
+const JITTER_RUN: usize = 5;
+/// Of a second seed's radio, how much is blended in (every third track is from it).
+const BLEND_EVERY: usize = 3;
+
+/// Shuffles `list` within consecutive runs of `run`, keeping the coarse order.
+pub fn jitter<T>(mut list: Vec<T>, run: usize, rng: &mut impl rand::Rng) -> Vec<T> {
+    use rand::seq::SliceRandom;
+    for chunk in list.chunks_mut(run.max(1)) {
+        chunk.shuffle(rng);
+    }
+    list
+}
+
+/// `main` with `extra` slotted in as every `every`-th track, until either runs out.
+pub fn blend<T>(main: Vec<T>, extra: Vec<T>, every: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(main.len() + extra.len());
+    let mut extra = extra.into_iter();
+    for (i, t) in main.into_iter().enumerate() {
+        if every > 0 && i % every == every - 1 {
+            out.extend(extra.next());
+        }
+        out.push(t);
+    }
+    out
+}
 
 fn lead_artist(artist: &str) -> &str {
     artist
@@ -80,7 +107,11 @@ impl Services {
 
     /// `wanted` (from another service) on `source`, if it's there.
     async fn find_on(&self, source: Source, wanted: Track) -> Option<Track> {
-        let query = format!("{} {}", lead_artist(&wanted.artist), core_title(&wanted.title));
+        let query = format!(
+            "{} {}",
+            lead_artist(&wanted.artist),
+            core_title(&wanted.title)
+        );
         let query = query.trim();
         let hits = match source {
             Source::Spotify => self.spotify_find_tracks(query, 5).await.ok()?,
@@ -103,25 +134,59 @@ impl Services {
     /// Up to `limit` tracks to play after `seeds` (the last one is the playing track), on the
     /// playing track's service. Never one of the seeds, never a song twice.
     pub async fn autoplay(&self, seeds: &[Track], limit: usize) -> Result<Vec<Track>> {
+        self.autoplay_mixed(seeds, limit, false).await
+    }
+
+    /// `autoplay`; with `mixed`, a song the playing track's service doesn't have comes from
+    /// YouTube Music instead of being left out (the experimental mixed-services queue).
+    pub async fn autoplay_mixed(
+        &self,
+        seeds: &[Track],
+        limit: usize,
+        mixed: bool,
+    ) -> Result<Vec<Track>> {
         let Some(seed) = seeds.last() else {
             bail!("Nothing to continue from");
         };
         let mut list = Vec::new();
-        match self.ytm_radio(seed).await {
+        // Another recent track, picked at random, flavours the radio a little, so the same
+        // song played twice (or on Monochrome and on YouTube) doesn't bring the same queue.
+        let second = {
+            use rand::seq::IndexedRandom;
+            seeds[..seeds.len() - 1].choose(&mut rand::rng()).cloned()
+        };
+        let (radio, second_radio) = tokio::join!(self.ytm_radio(seed), async {
+            match &second {
+                Some(s) => self.ytm_radio(s).await.unwrap_or_default(),
+                None => Vec::new(),
+            }
+        });
+        let radio = radio.map(|r| {
+            let mut rng = rand::rng();
+            let main = jitter(r, JITTER_RUN, &mut rng);
+            blend(
+                main,
+                jitter(second_radio, JITTER_RUN, &mut rng),
+                BLEND_EVERY,
+            )
+        });
+        match radio {
             Ok(radio) if seed.source == Source::YouTube => list = radio,
             Ok(radio) => {
                 // Some won't be on the seed's service, so look up more than needed.
                 let source = seed.source.clone();
-                let found: Vec<Option<Track>> = stream::iter(
-                    radio.into_iter().take(limit + limit / 2 + 4),
-                )
-                .map(|t| {
-                    let (this, source) = (self.clone(), source.clone());
-                    async move { this.find_on(source, t).await }
-                })
-                .buffered(CONCURRENCY)
-                .collect()
-                .await;
+                let found: Vec<Option<Track>> =
+                    stream::iter(radio.into_iter().take(limit + limit / 2 + 4))
+                        .map(|t| {
+                            let (this, source) = (self.clone(), source.clone());
+                            async move {
+                                let fallback = mixed.then(|| t.clone());
+                                this.find_on(source, t).await.or(fallback)
+                            }
+                        })
+                        .buffered(CONCURRENCY)
+                        .collect()
+                        .await;
                 list = found.into_iter().flatten().collect();
             }
             Err(e) => tracing::info!("autoplay: no YouTube Music radio for this song: {e}"),
@@ -147,6 +212,26 @@ impl Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jitter_keeps_runs_and_blend_slots_in_extras() {
+        let mut rng = rand::rng();
+        let out = jitter((0..20).collect::<Vec<_>>(), 5, &mut rng);
+        for (i, run) in out.chunks(5).enumerate() {
+            let mut sorted = run.to_vec();
+            sorted.sort();
+            assert_eq!(
+                sorted,
+                (i * 5..i * 5 + 5).collect::<Vec<_>>(),
+                "stays in its run"
+            );
+        }
+        assert_eq!(
+            blend(vec![1, 2, 3, 4, 5, 6], vec![10, 20, 30], 3),
+            [1, 2, 10, 3, 4, 5, 20, 6]
+        );
+        assert_eq!(blend(vec![1, 2], Vec::new(), 3), [1, 2]);
+    }
     use mosaic_core::model::TrackId;
 
     fn t(id: u64, title: &str, artist: &str) -> Track {

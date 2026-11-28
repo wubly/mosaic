@@ -101,6 +101,7 @@ fn make_deck(id: DeckId, rate: u32) -> (Deck, DeckPlayer) {
             samples: sample_tx,
             markers: marker_tx,
             pushed: 0,
+            loudness: None,
         }),
         decoder: None,
         source: None,
@@ -344,6 +345,7 @@ impl Control {
                     .set_eq(if enabled { gains_db } else { [0.0; 5] })
             }
             Command::SetLeveling(on) => self.params.leveling.store(on, Ordering::Relaxed),
+            Command::SetNormalize(on) => self.params.normalize.store(on, Ordering::Relaxed),
             Command::SetSpeed(v) => self.params.set_speed(v),
             Command::Shutdown => {}
         }

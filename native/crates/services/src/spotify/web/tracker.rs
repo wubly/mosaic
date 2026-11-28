@@ -151,8 +151,7 @@ impl Tracker {
     /// take it over where it is instead of restarting it.
     pub fn already_playing(&self, uri: &str) -> bool {
         self.last.as_ref().is_some_and(|st| {
-            !st.paused
-                && (st.uri.as_deref() == Some(uri) || st.linked_from.as_deref() == Some(uri))
+            !st.paused && (st.uri.as_deref() == Some(uri) || st.linked_from.as_deref() == Some(uri))
         })
     }
 

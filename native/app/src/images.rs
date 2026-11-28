@@ -10,6 +10,11 @@ const FADE: Duration = Duration::from_millis(150);
 const CAPACITY: usize = 160;
 /// Never drop something drawn this recently, even over capacity.
 const KEEP_RECENT: Duration = Duration::from_secs(3);
+/// Handles nothing has drawn for this long are dropped even under capacity, so memory goes
+/// back down after browsing; coming back reloads them from the services' caches.
+const IDLE_EXPIRY: Duration = Duration::from_secs(60);
+/// How often idle handles are looked for (only while there are any).
+pub const TRIM_EVERY: Duration = Duration::from_secs(20);
 
 pub type Key = (String, u32);
 
@@ -27,6 +32,8 @@ pub struct ImageCache {
     ready: HashMap<Key, Entry>,
     requested: RefCell<HashSet<Key>>,
     wanted: RefCell<Vec<Key>>,
+    /// The newest draw: what that drew is on screen now, however long ago it was.
+    latest: std::cell::Cell<Option<Instant>>,
 }
 
 impl ImageCache {
@@ -36,6 +43,9 @@ impl ImageCache {
             return None;
         }
         let key = (src.to_string(), px);
+        if self.latest.get().is_none_or(|l| now > l) {
+            self.latest.set(Some(now));
+        }
         match self.ready.get(&key) {
             Some(e) => {
                 e.used.set(now);
@@ -108,6 +118,27 @@ impl ImageCache {
         Handle::from_rgba(w, h, bytes::Bytes::from_owner(Pixels(img)))
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.ready.is_empty()
+    }
+
+    /// Drops handles not drawn for `IDLE_EXPIRY`; returns how many went. What the latest draw
+    /// showed stays: the window may simply not have been redrawn in a while.
+    pub fn expire(&mut self, now: Instant) -> usize {
+        let before = self.ready.len();
+        let latest = self.latest.get();
+        let mut requested = self.requested.borrow_mut();
+        self.ready.retain(|key, e| {
+            let used = e.used.get();
+            let keep = Some(used) == latest || now.saturating_duration_since(used) < IDLE_EXPIRY;
+            if !keep {
+                requested.remove(key);
+            }
+            keep
+        });
+        before - self.ready.len()
+    }
+
     pub fn is_fading(&self, now: Instant) -> bool {
         self.ready
             .values()
@@ -118,6 +149,22 @@ impl ImageCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_handles_expire_and_can_load_again() {
+        let mut cache = ImageCache::default();
+        let now = Instant::now();
+        let handle = Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+        cache.insert(("a".into(), 64), handle.clone(), now);
+        cache.insert(("b".into(), 64), handle, now);
+        let later = now + IDLE_EXPIRY / 2;
+        assert!(cache.art("a", 64, later).is_some());
+        // Long after, with nothing redrawn since: "a" is still on screen, "b" isn't.
+        assert_eq!(cache.expire(now + IDLE_EXPIRY * 3), 1, "b went");
+        assert!(cache.art("a", 64, later).is_some(), "a stayed");
+        assert!(cache.art("b", 64, now).is_none(), "b loads again");
+        assert_eq!(cache.take_wanted(), [("b".to_string(), 64)]);
+    }
 
     #[test]
     fn art_requests_once_and_fades_in_when_ready() {

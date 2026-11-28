@@ -164,8 +164,7 @@ pub fn view<'a, Message: Clone + 'a>(
     }
     items = items.push(
         container(
-            container(Space::new().width(32).height(1))
-                .style(styles::fill(p.outline_variant, 0.0)),
+            container(Space::new().width(32).height(1)).style(styles::fill(p.outline_variant, 0.0)),
         )
         .padding([(SPLIT - GAP * 2.0) / 2.0, 0.0]),
     );

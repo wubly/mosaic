@@ -10,6 +10,19 @@ pub fn reduced_motion() -> bool {
     std::env::var_os("MOSAIC_REDUCED_MOTION").is_some_and(|v| v == "1")
 }
 
+/// `MOSAIC_SLOW_MOTION=10` stretches the in-tree motion (`widgets::appear`) ten times, for
+/// looking at an animation frame by frame.
+pub fn slow_motion() -> f32 {
+    static FACTOR: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *FACTOR.get_or_init(|| {
+        std::env::var("MOSAIC_SLOW_MOTION")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|f| *f > 0.0)
+            .unwrap_or(1.0)
+    })
+}
+
 /// Solves a CSS cubic-bezier at progress `x`.
 pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
     let coord = |a: f32, b: f32, t: f32| {

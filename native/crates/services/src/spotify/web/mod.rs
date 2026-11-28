@@ -143,9 +143,8 @@ impl WebPlayer {
             .and_then(|d| d.clone())
             .ok_or_else(|| anyhow!("{NOT_STARTED}: no device yet"))?;
         let leads = self.shared.services.spotify_leads();
-        let adopt = leads
-            && position_ms < 2_000
-            && self.with(|t| t.already_playing(uri)).unwrap_or(false);
+        let adopt =
+            leads && position_ms < 2_000 && self.with(|t| t.already_playing(uri)).unwrap_or(false);
         let gen = self
             .with(|t| {
                 let gen = t.begin(uri, position_ms, target);
@@ -163,7 +162,11 @@ impl WebPlayer {
             self.spawn_feeder(gen);
             return Ok(());
         }
-        let context = if leads { context.map(str::to_string) } else { None };
+        let context = if leads {
+            context.map(str::to_string)
+        } else {
+            None
+        };
         if let Some(v) = self.with(|t| t.volume).flatten() {
             self.send(json!({ "type": "volume", "value": v }));
         }
@@ -317,7 +320,12 @@ impl WebPlayer {
         if stale {
             let me = self.clone();
             tokio::spawn(async move {
-                match me.shared.services.spotify_api("/me/player/queue", &[]).await {
+                match me
+                    .shared
+                    .services
+                    .spotify_api("/me/player/queue", &[])
+                    .await
+                {
                     Ok(json) => {
                         let playing = json["currently_playing"]["uri"]
                             .as_str()

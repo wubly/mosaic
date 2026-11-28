@@ -766,7 +766,7 @@ impl App {
                 .style(styles::bare(p))
                 .on_press(msg.clone()),
             button(
-                container(text(title).size(14))
+                container(text(title).size(14).wrapping(text::Wrapping::None))
                     .height(40)
                     .padding(iced::Padding {
                         top: 12.0,
@@ -790,10 +790,16 @@ impl App {
         .into()
     }
 
+    /// A carousel of cards. They rise in one after another when it first shows, and again
+    /// when `key` changes (see `appear::list_key`).
     pub(crate) fn shelf_row<'a>(
+        key: u64,
         cards: impl Iterator<Item = Element<'a, Message>>,
         p: Palette,
     ) -> Element<'a, Message> {
+        let cards = cards
+            .enumerate()
+            .map(|(i, c)| crate::widgets::appear::enter(c, key, i, 14, true));
         crate::widgets::smooth::carousel(
             scrollable(row(cards).spacing(20).padding(iced::Padding {
                 bottom: 14.0,
@@ -812,6 +818,7 @@ impl App {
         p: Palette,
     ) -> Element<'a, Message> {
         Self::shelf_row(
+            crate::widgets::appear::list_key(albums.iter().map(|a| &a.id)),
             albums.iter().map(|a| {
                 let sub = [
                     a.year.clone(),
@@ -844,6 +851,7 @@ impl App {
         p: Palette,
     ) -> Element<'a, Message> {
         Self::shelf_row(
+            crate::widgets::appear::list_key(artists.iter().map(|a| &a.id)),
             artists.iter().map(|a| {
                 self.card(
                     &a.image,
@@ -866,6 +874,7 @@ impl App {
     ) -> Element<'a, Message> {
         let liked = liked_total.map(|n| self.liked_card(n, p));
         Self::shelf_row(
+            crate::widgets::appear::list_key(lists.iter().map(|l| &l.id)),
             liked.into_iter().chain(lists.iter().map(|l| {
                 self.card(
                     &l.image,
@@ -918,6 +927,7 @@ impl App {
         p: Palette,
     ) -> Element<'a, Message> {
         Self::shelf_row(
+            crate::widgets::appear::list_key(list.iter().map(|t| &t.id)),
             list.iter().enumerate().map(|(i, t)| {
                 self.tile(
                     t,
@@ -1087,12 +1097,8 @@ impl App {
         match &s.page {
             None => {
                 body = body.push(
-                    row((0..6).map(|_| {
-                        container(Space::new().width(148).height(148))
-                            .style(styles::fill(p.surface_container_high, 16.0))
-                            .into()
-                    }))
-                    .spacing(20),
+                    row((0..6).map(|_| crate::widgets::skeleton::block(148, 148, 16.0, p)))
+                        .spacing(20),
                 );
             }
             Some((_, Err(e))) => {

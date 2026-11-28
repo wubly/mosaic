@@ -318,6 +318,23 @@ fn push_marker(rings: &mut Rings, ctx: &DecoderCtx, marker: Marker) -> Result<()
     }
 }
 
+/// Feeds the loudness meter and, every half second of audio, publishes its gain.
+fn measure(rings: &mut Rings, ctx: &DecoderCtx, block: &[f32]) {
+    let Some(meter) = rings.loudness.as_mut() else {
+        return;
+    };
+    let before = meter.measured_secs();
+    meter.push(block);
+    let after = meter.measured_secs();
+    // The first estimate after a second of audio; a first guess off a breath of intro would
+    // swing the level.
+    if after >= 1.0 && (before < 1.0 || (after * 2.0).floor() > (before * 2.0).floor()) {
+        if let Some(g) = meter.gain() {
+            ctx.shared.norm_gain.store(g.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
 fn push_block(
     rings: &mut Rings,
     ctx: &DecoderCtx,
@@ -334,6 +351,7 @@ fn push_block(
             pos,
         },
     )?;
+    measure(rings, ctx, block);
     let mut rest = block;
     while !rest.is_empty() {
         poll(ctx)?;
@@ -528,6 +546,11 @@ pub(crate) fn run(ctx: DecoderCtx, mut rings: Rings) -> Rings {
     if flush_marker(&mut rings, &ctx, ctx.epoch, ctx.start_at).is_err() {
         return rings;
     }
+    // A new track: measure it from scratch. Until enough is measured it plays as it is.
+    rings.loudness = Some(crate::dsp::loudness::LoudnessMeter::new(ctx.out_rate));
+    ctx.shared
+        .norm_gain
+        .store(1.0f32.to_bits(), Ordering::Relaxed);
 
     let mut stream = match open_stream(&ctx) {
         Ok(s) => s,

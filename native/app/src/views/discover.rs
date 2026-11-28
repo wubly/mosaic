@@ -8,6 +8,7 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Task};
 use mosaic_core::model::Track;
 use mosaic_core::relevance::filter_along;
+use mosaic_services::catalog::{Card, Found};
 
 use super::track::{ListRef, TrackRef};
 use crate::app::{App, Message};
@@ -76,9 +77,8 @@ pub enum Msg {
     Debounced(u64),
     Submit,
     Clear,
-    Results(u64, Result<Vec<Track>, String>),
-    YoutubeResults(u64, Result<Vec<Track>, String>),
-    MonochromeResults(u64, Result<Vec<Track>, String>),
+    /// What a search of SoundCloud, YouTube Music or Monochrome found (for query `seq`).
+    Found(u64, Box<Result<Found, String>>),
     Genre(&'static str),
     Charts(&'static str, Result<Vec<Track>, String>),
     More(String, Result<Vec<Track>, String>),
@@ -91,9 +91,9 @@ pub enum Msg {
 pub struct State {
     pub query: String,
     pub service: SearchService,
-    pub results: Vec<Track>,
-    pub youtube: Vec<Track>,
-    pub monochrome: Vec<Track>,
+    /// Songs, artists, albums and playlists from the picked service (Spotify's are kept with
+    /// the Spotify section, `ui.spotify.search`).
+    pub found: Found,
     pub busy: bool,
     /// The Spotify search is still out.
     pub sp_busy: bool,
@@ -115,9 +115,7 @@ impl Default for State {
         State {
             query: String::new(),
             service: SearchService::default(),
-            results: Vec::new(),
-            youtube: Vec::new(),
-            monochrome: Vec::new(),
+            found: Found::default(),
             busy: false,
             sp_busy: false,
             error: String::new(),
@@ -194,6 +192,13 @@ impl App {
         match msg {
             Msg::Query(q) => {
                 self.ui.discover.query = q;
+                let view = self.view_kind();
+                if !self.ui.discover.query.trim().is_empty() {
+                    self.catalog_close(view);
+                    self.ui
+                        .platform_tabs
+                        .retain(|v, t| *v != view || *t != super::platform::Tab::Account);
+                }
                 let trimmed = self.ui.discover.query.trim().to_string();
                 self.ui.discover.seq += 1;
                 let seq = self.ui.discover.seq;
@@ -273,35 +278,16 @@ impl App {
                 self.clear_search_results();
                 Task::none()
             }
-            Msg::YoutubeResults(seq, result) => {
+            Msg::Found(seq, result) => {
                 if seq != self.ui.discover.seq {
                     return Task::none();
                 }
                 self.ui.discover.busy = false;
-                match result {
-                    Ok(list) => self.ui.discover.youtube = filter_along(list, None),
-                    Err(e) => self.ui.discover.error = e,
-                }
-                Task::none()
-            }
-            Msg::MonochromeResults(seq, result) => {
-                if seq != self.ui.discover.seq {
-                    return Task::none();
-                }
-                self.ui.discover.busy = false;
-                match result {
-                    Ok(list) => self.ui.discover.monochrome = list,
-                    Err(e) => self.ui.discover.error = e,
-                }
-                Task::none()
-            }
-            Msg::Results(seq, result) => {
-                if seq != self.ui.discover.seq {
-                    return Task::none();
-                }
-                self.ui.discover.busy = false;
-                match result {
-                    Ok(list) => self.ui.discover.results = filter_along(list, None),
+                match *result {
+                    Ok(mut found) => {
+                        found.tracks = filter_along(found.tracks, None);
+                        self.ui.discover.found = found;
+                    }
                     Err(e) => self.ui.discover.error = e,
                 }
                 Task::none()
@@ -357,9 +343,7 @@ impl App {
 
     fn clear_search_results(&mut self) {
         let d = &mut self.ui.discover;
-        d.results.clear();
-        d.youtube.clear();
-        d.monochrome.clear();
+        d.found = Found::default();
         d.busy = false;
         d.sp_busy = false;
         self.ui.spotify.search = Default::default();
@@ -368,12 +352,35 @@ impl App {
     /// Song hits of the picked service.
     pub(crate) fn search_tracks(&self) -> Vec<Track> {
         match self.search_service() {
-            SearchService::SoundCloud => self.ui.discover.results.clone(),
             SearchService::Spotify => self.ui.spotify.search.tracks.clone(),
-            SearchService::YouTube => self.ui.discover.youtube.clone(),
-            SearchService::Monochrome => self.ui.discover.monochrome.clone(),
             SearchService::Device => self.local_hits(60),
+            _ => self.ui.discover.found.tracks.clone(),
         }
+    }
+
+    /// Artist, album and playlist hits of the picked service, the same way for each.
+    pub(crate) fn search_cards(&self) -> [(&'static str, Vec<Card>); 3] {
+        use super::catalog::{from_spotify_album, from_spotify_artist, from_spotify_playlist};
+        let (artists, albums, playlists) = match self.search_service() {
+            SearchService::Spotify => {
+                let sp = &self.ui.spotify.search;
+                (
+                    sp.artists.iter().map(from_spotify_artist).collect(),
+                    sp.albums.iter().map(from_spotify_album).collect(),
+                    sp.playlists.iter().map(from_spotify_playlist).collect(),
+                )
+            }
+            SearchService::Device => Default::default(),
+            _ => {
+                let f = &self.ui.discover.found;
+                (f.artists.clone(), f.albums.clone(), f.playlists.clone())
+            }
+        };
+        [
+            ("Artists", artists),
+            ("Albums", albums),
+            ("Playlists", playlists),
+        ]
     }
 
     fn run_search(&mut self) -> Task<Message> {
@@ -387,27 +394,32 @@ impl App {
         );
         self.ui.discover.sp_busy = service == SearchService::Spotify;
         let services = self.services.clone();
-        match service {
-            SearchService::SoundCloud => Task::perform(
-                async move { services.sc_search(&q, 30).await.map_err(|e| e.to_string()) },
-                move |r| Message::Discover(Msg::Results(seq, r)),
-            ),
-            SearchService::Spotify => self.search_spotify(q, seq),
-            SearchService::YouTube => Task::perform(
-                async move { services.yt_search(&q).await.map_err(|e| e.to_string()) },
-                move |r| Message::Discover(Msg::YoutubeResults(seq, r)),
-            ),
-            SearchService::Monochrome => Task::perform(
-                async move { services.mono_search(&q).await.map_err(|e| e.to_string()) },
-                move |r| Message::Discover(Msg::MonochromeResults(seq, r)),
-            ),
-            SearchService::Device => Task::none(),
-        }
+        let source = match service {
+            SearchService::SoundCloud => mosaic_core::model::Source::SoundCloud,
+            SearchService::YouTube => mosaic_core::model::Source::YouTube,
+            SearchService::Monochrome => mosaic_core::model::Source::Monochrome,
+            SearchService::Spotify => return self.search_spotify(q, seq),
+            SearchService::Device => return Task::none(),
+        };
+        // A new search starts clean, so the last one's artists don't linger beside new songs.
+        self.ui.discover.found = Found::default();
+        Task::perform(
+            async move {
+                services
+                    .search_all(&source, &q)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |r| Message::Discover(Msg::Found(seq, Box::new(r))),
+        )
     }
 
     /// Opens Discover with a search term (command palette, `/`).
     pub(crate) fn start_search(&mut self, q: String) -> Task<Message> {
-        self.ui.view = Some(crate::widgets::rail::View::Discover);
+        // A service's own page has its own search bar; anywhere else, Home's.
+        if !super::platform::is_platform(self.view_kind()) {
+            self.ui.view = Some(crate::widgets::rail::View::Discover);
+        }
         self.retarget_rail();
         self.ui.now_playing = false;
         let focus = iced::widget::operation::focus(SEARCH_ID);
@@ -422,10 +434,7 @@ impl App {
     }
 
     fn skeleton_tile(&self, width: f32, p: Palette) -> Element<'_, Message> {
-        let block = |w: Length, h: f32, r: f32| {
-            container(Space::new().width(w).height(h))
-                .style(styles::fill(p.surface_container_high, r))
-        };
+        let block = |w: Length, h: f32, r: f32| crate::widgets::skeleton::block(w, h, r, p);
         column![
             block(Length::Fixed(width), width, 16.0),
             block(Length::Fixed(width * 0.85), 12.0, 12.0),
@@ -436,17 +445,24 @@ impl App {
     }
 
     fn shelf<'a>(&'a self, list: &'a [Track], which: ListRef, p: Palette) -> Element<'a, Message> {
+        let key = crate::widgets::appear::list_key(list.iter().map(|t| &t.id));
         carousel(
             scrollable(
                 row(list.iter().enumerate().map(|(i, t)| {
-                    self.tile(
-                        t,
-                        TrackRef {
-                            list: which.clone(),
-                            index: i,
-                        },
-                        148.0,
-                        p,
+                    crate::widgets::appear::enter(
+                        self.tile(
+                            t,
+                            TrackRef {
+                                list: which.clone(),
+                                index: i,
+                            },
+                            148.0,
+                            p,
+                        ),
+                        key,
+                        i,
+                        14,
+                        true,
                     )
                 }))
                 .spacing(20)
@@ -465,15 +481,22 @@ impl App {
     }
 
     fn grid<'a>(&'a self, list: Vec<Track>, which: ListRef, p: Palette) -> Element<'a, Message> {
+        let key = crate::widgets::appear::list_key(list.iter().map(|t| &t.id));
         iced::widget::Row::with_children(list.iter().enumerate().map(|(i, t)| {
-            self.tile(
-                t,
-                TrackRef {
-                    list: which.clone(),
-                    index: i,
-                },
-                156.0,
-                p,
+            crate::widgets::appear::enter(
+                self.tile(
+                    t,
+                    TrackRef {
+                        list: which.clone(),
+                        index: i,
+                    },
+                    156.0,
+                    p,
+                ),
+                key,
+                i,
+                14,
+                true,
             )
         }))
         .spacing(20)
@@ -482,9 +505,14 @@ impl App {
         .into()
     }
 
-    fn search_bar(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn search_bar(&self, p: Palette) -> Element<'_, Message> {
         let d = &self.ui.discover;
-        let input = text_input("Search songs, artists…", &d.query)
+        let view = self.view_kind();
+        let placeholder = match super::platform::service(view) {
+            Some(service) if super::platform::is_platform(view) => format!("Search {service}"),
+            _ => "Search songs, artists…".to_string(),
+        };
+        let input = text_input(&placeholder, &d.query)
             .id(SEARCH_ID)
             .on_input(|q| Message::Discover(Msg::Query(q)))
             .on_submit(Message::Discover(Msg::Submit))
@@ -532,6 +560,7 @@ impl App {
         )
         .padding([0, 20])
         .height(56)
+        .width(Length::Fill)
         .max_width(520)
         .center_y(56)
         .style(styles::fill(p.surface_container_high, 28.0))
@@ -540,7 +569,7 @@ impl App {
 
     /// Completions of the current query as chips under the search bar; a fixed-height row so
     /// results don't jump as they come and go.
-    fn suggestion_row(&self, p: Palette) -> Element<'_, Message> {
+    pub(crate) fn suggestion_row(&self, p: Palette) -> Element<'_, Message> {
         let d = &self.ui.discover;
         let (for_query, list) = &d.suggestions;
         let typed = d.query.trim().to_lowercase();
@@ -624,7 +653,66 @@ impl App {
         .into()
     }
 
+    /// The songs of a search: a heading with where they come from, then the grid (or
+    /// placeholders while searching, or why there's nothing).
+    fn songs_section<'a>(
+        &'a self,
+        mut body: iced::widget::Column<'a, Message>,
+        songs: Vec<Track>,
+        service: SearchService,
+        p: Palette,
+    ) -> iced::widget::Column<'a, Message> {
+        let d = &self.ui.discover;
+        body = body.push(
+            row![
+                container(
+                    text(format!("Songs for “{}”", d.query.trim()))
+                        .size(16)
+                        .color(p.on_surface_variant)
+                )
+                .padding(iced::Padding {
+                    top: 32.0,
+                    bottom: 16.0,
+                    ..iced::Padding::ZERO
+                }),
+                Space::new().width(Length::Fill),
+                text(if d.busy || d.sp_busy {
+                    format!("Searching {service}…")
+                } else {
+                    format!("From {service}")
+                })
+                .size(12)
+                .color(p.on_surface_variant),
+            ]
+            .align_y(Alignment::Center),
+        );
+        if !d.error.is_empty() {
+            body = body.push(
+                container(text(d.error.clone()).size(14))
+                    .padding([12, 16])
+                    .width(Length::Fill)
+                    .style(styles::error_box(p)),
+            );
+        }
+        let any_busy = d.busy || d.sp_busy;
+        if any_busy && songs.is_empty() {
+            body.push(
+                iced::widget::Row::with_children((0..12).map(|_| self.skeleton_tile(156.0, p)))
+                    .spacing(20)
+                    .wrap()
+                    .vertical_spacing(32),
+            )
+        } else if !any_busy && d.error.is_empty() && songs.is_empty() {
+            body.push(text("Nothing found.").color(p.on_surface_variant))
+        } else {
+            body.push(self.grid(songs, ListRef::Results, p))
+        }
+    }
+
     pub(crate) fn discover_view(&self, p: Palette) -> Element<'_, Message> {
+        if let Some(page) = self.catalog_page(crate::widgets::rail::View::Discover) {
+            return self.catalog_view(page, p);
+        }
         self.discover_page(Mode::Home, p)
     }
 
@@ -644,18 +732,21 @@ impl App {
                 ..iced::Padding::ZERO
             })
         };
-        let mut body = column![
-            row![logo::mark(18.0), text("Mosaic").size(14).color(p.primary)]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            text(title).size(28),
-            Space::new().height(24),
-        ]
-        .spacing(4);
-        body = match mode {
-            Mode::Home => body.push(self.search_row(p)).push(self.suggestion_row(p)),
-            Mode::Search(_) => body.push(self.search_bar(p)).push(self.suggestion_row(p)),
-            Mode::Charts => body,
+        // A service page has its name, search bar and suggestions in the strip above it, so
+        // only Home starts with a title of its own.
+        let mut body = if mode == Mode::Home {
+            column![
+                row![logo::mark(18.0), text("Mosaic").size(14).color(p.primary)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                text(title).size(28),
+                Space::new().height(24),
+                self.search_row(p),
+                self.suggestion_row(p),
+            ]
+            .spacing(4)
+        } else {
+            column![].spacing(4)
         };
 
         let unavailable = matches!(mode, Mode::Search(svc) if svc != self.search_service());
@@ -672,67 +763,38 @@ impl App {
                 _ => "Songs, artists and albums.",
             };
             body = body.push(
-                container(text(hint).size(14).color(p.on_surface_variant)).padding(
-                    iced::Padding {
-                        top: 24.0,
-                        ..iced::Padding::ZERO
-                    },
-                ),
+                container(text(hint).size(14).color(p.on_surface_variant)).padding(iced::Padding {
+                    top: 24.0,
+                    ..iced::Padding::ZERO
+                }),
             );
         } else if mode != Mode::Charts && !d.query.trim().is_empty() {
+            use mosaic_services::catalog::{section_order, Section};
             let service = self.search_service();
-            let sp = &self.ui.spotify.search;
-            let on_spotify = service == SearchService::Spotify;
-            if on_spotify && !sp.artists.is_empty() {
-                body = body
-                    .push(h3("Artists".into()))
-                    .push(self.artist_cards(&sp.artists, p));
-            }
-            if on_spotify && !sp.albums.is_empty() {
-                body = body
-                    .push(h3("Albums".into()))
-                    .push(self.album_cards(&sp.albums, p));
-            }
-            if on_spotify && !sp.playlists.is_empty() {
-                body = body
-                    .push(h3("Playlists".into()))
-                    .push(self.playlist_cards(&sp.playlists, None, p));
-            }
-            body = body.push(
-                row![
-                    h3(format!("Songs for “{}”", d.query.trim())),
-                    Space::new().width(Length::Fill),
-                    text(if d.busy || d.sp_busy {
-                        format!("Searching {service}…")
-                    } else {
-                        format!("From {service}")
-                    })
-                    .size(12)
-                    .color(p.on_surface_variant),
-                ]
-                .align_y(Alignment::Center),
-            );
-            if !d.error.is_empty() {
-                body = body.push(
-                    container(text(d.error.clone()).size(14))
-                        .padding([12, 16])
-                        .width(Length::Fill)
-                        .style(styles::error_box(p)),
-                );
-            }
+            let [artists, albums, playlists] = self.search_cards().map(|(_, cards)| cards);
             let songs = self.search_tracks();
-            let any_busy = d.busy || d.sp_busy;
-            if any_busy && songs.is_empty() {
-                body = body.push(
-                    iced::widget::Row::with_children((0..12).map(|_| self.skeleton_tile(156.0, p)))
-                        .spacing(20)
-                        .wrap()
-                        .vertical_spacing(32),
-                );
-            } else if !any_busy && d.error.is_empty() && songs.is_empty() {
-                body = body.push(text("Nothing found.").color(p.on_surface_variant));
-            } else {
-                body = body.push(self.grid(songs, ListRef::Results, p));
+            let found = Found {
+                tracks: songs,
+                artists,
+                albums,
+                playlists,
+            };
+            // What the query asks for comes first: an artist's name, a song, an album…
+            for section in section_order(&d.query, &found) {
+                let cards = match section {
+                    Section::Songs => {
+                        body = self.songs_section(body, found.tracks.clone(), service, p);
+                        continue;
+                    }
+                    Section::Artists => (&found.artists, "Artists"),
+                    Section::Albums => (&found.albums, "Albums"),
+                    Section::Playlists => (&found.playlists, "Playlists"),
+                };
+                if !cards.0.is_empty() {
+                    body = body
+                        .push(h3(cards.1.into()))
+                        .push(self.catalog_cards(cards.0, p));
+                }
             }
         } else {
             let recent = self.recent.as_slice();
@@ -766,29 +828,32 @@ impl App {
                 .find(|(g, _)| *g == d.genre)
                 .map_or("", |(_, l)| *l);
             if charts {
-            body = body.push(
-                row![
-                    container(text(genre_title).size(16).color(p.on_surface_variant)),
-                    Space::new().width(Length::Fill),
-                    chips,
-                ]
-                .align_y(Alignment::Center)
-                .padding(iced::Padding {
-                    top: 32.0,
-                    bottom: 16.0,
-                    ..iced::Padding::ZERO
-                }),
-            );
-            if !d.charts_loaded || d.charts.0 != d.genre {
                 body = body.push(
-                    iced::widget::Row::with_children((0..8).map(|_| self.skeleton_tile(148.0, p)))
-                        .spacing(20),
+                    row![
+                        container(text(genre_title).size(16).color(p.on_surface_variant)),
+                        Space::new().width(Length::Fill),
+                        chips,
+                    ]
+                    .align_y(Alignment::Center)
+                    .padding(iced::Padding {
+                        top: 32.0,
+                        bottom: 16.0,
+                        ..iced::Padding::ZERO
+                    }),
                 );
-            } else if d.charts.1.is_empty() {
-                body = body.push(text("Couldn’t load this right now.").color(p.on_surface_variant));
-            } else {
-                body = body.push(self.shelf(&d.charts.1, ListRef::Charts, p));
-            }
+                if !d.charts_loaded || d.charts.0 != d.genre {
+                    body = body.push(
+                        iced::widget::Row::with_children(
+                            (0..8).map(|_| self.skeleton_tile(148.0, p)),
+                        )
+                        .spacing(20),
+                    );
+                } else if d.charts.1.is_empty() {
+                    body = body
+                        .push(text("Couldn’t load this right now.").color(p.on_surface_variant));
+                } else {
+                    body = body.push(self.shelf(&d.charts.1, ListRef::Charts, p));
+                }
             }
             if let (Some(_), true) = (&d.more.0, d.more_busy || !d.more.1.is_empty()) {
                 let seed = self
@@ -817,7 +882,8 @@ impl App {
             scrollable(
                 container(body)
                     .padding(iced::Padding {
-                        top: 32.0,
+                        // Under a service's strip, the first section's own spacing is enough.
+                        top: if mode == Mode::Home { 32.0 } else { 0.0 },
                         right: 40.0,
                         bottom: 24.0,
                         left: 40.0,

@@ -30,9 +30,15 @@ fn current_user() -> String {
         .unwrap_or_default()
 }
 
-/// Tries to hand `messages` to a running instance; otherwise becomes the primary one.
-pub fn acquire(messages: &[String]) -> std::io::Result<Instance> {
-    acquire_for(&current_user(), messages)
+/// Tries to hand `messages` to a running instance; otherwise becomes the primary one. `scope`
+/// separates instances that can't get in each other's way (another data folder): one per
+/// scope, the default scope being the user's own Mosaic.
+pub fn acquire(scope: Option<&str>, messages: &[String]) -> std::io::Result<Instance> {
+    let who = match scope {
+        Some(s) => format!("{}-{s}", current_user()),
+        None => current_user(),
+    };
+    acquire_for(&who, messages)
 }
 
 fn acquire_for(who: &str, messages: &[String]) -> std::io::Result<Instance> {

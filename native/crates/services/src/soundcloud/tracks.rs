@@ -85,7 +85,8 @@ pub fn slim_track(t: &Value) -> Option<Track> {
         folder: None,
         lrc_path: None,
         uri: None,
-        artist_id: None,
+        // The uploader stands in for the artist (see `catalog`).
+        artist_id: t["user"]["id"].as_u64().map(|id| id.to_string()),
         album_id: None,
         video_id: None,
         extra: Default::default(),

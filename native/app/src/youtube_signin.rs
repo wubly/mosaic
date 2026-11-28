@@ -85,7 +85,10 @@ mod imp {
             Err(e) => fail(&format!("could not create the sign-in window: {e}")),
         };
         // Centre on the primary monitor, then show.
-        if let Some(m) = window.current_monitor().or_else(|| window.primary_monitor()) {
+        if let Some(m) = window
+            .current_monitor()
+            .or_else(|| window.primary_monitor())
+        {
             let ms = m.size();
             let ws = window.outer_size();
             let mp = m.position();

@@ -6,8 +6,9 @@ use iced::{Alignment, Element, Length, Task};
 use mosaic_core::model::Track;
 use mosaic_services::youtube::api::{Library, PlaylistCard};
 use mosaic_services::youtube::auth::{Account, Status};
-use mosaic_services::youtube::library::YtLibrary;
+use mosaic_services::youtube::home::YtHome;
 use mosaic_services::youtube::innertube::VideoStream;
+use mosaic_services::youtube::library::YtLibrary;
 use rand::seq::SliceRandom;
 
 use super::common::{
@@ -38,6 +39,8 @@ pub enum Msg {
     ClientId(String),
     ClientSecret(String),
     Library(Box<Library>),
+    /// The signed-in account's recently played, home shelves, likes, playlists and artists.
+    Home(Result<Box<YtHome>, String>),
     Open(PlaylistCard),
     Opened(String, Result<Vec<Track>, String>),
     Back,
@@ -85,6 +88,11 @@ pub struct State {
     pub account: Option<Account>,
     pub signing_in: bool,
     pub importing: bool,
+    /// What the signed-in account has on YouTube Music (`None` until asked for).
+    pub home: Option<Result<YtHome, String>>,
+    pub home_loading: bool,
+    /// The browser the Google sign-in opens (looked up once at start).
+    pub signin_browser: Option<&'static str>,
 }
 
 impl App {
@@ -93,13 +101,38 @@ impl App {
         true
     }
 
-    /// Whether the account section is shown: the beta is on and Google is connected.
+    /// Whether there is an account to show: signed in with Google (or, for whoever set it up
+    /// before, connected through their own developer client).
     pub(crate) fn youtube_enabled(&self) -> bool {
-        self.youtube_playable() && self.ui.youtube.status.connected
+        self.youtube_playable()
+            && (self.ui.youtube.account.is_some() || self.ui.youtube.status.connected)
+    }
+
+    /// Asks YouTube Music for the signed-in account's home and library, unless that is already
+    /// on its way.
+    fn youtube_load_home(&mut self) -> Task<Message> {
+        if self.ui.youtube.account.is_none() || self.ui.youtube.home_loading {
+            return Task::none();
+        }
+        self.ui.youtube.home_loading = true;
+        let services = self.services.clone();
+        Task::perform(
+            async move {
+                services
+                    .yt_home()
+                    .await
+                    .map(Box::new)
+                    .map_err(|e| e.to_string())
+            },
+            |r| Message::Youtube(Msg::Home(r)),
+        )
     }
 
     pub(crate) fn youtube_boot(&mut self) -> Task<Message> {
         self.ui.youtube.account = self.services.yt_account();
+        self.ui.youtube.signin_browser = mosaic_services::youtube::browser::find()
+            .first()
+            .map(|b| b.name);
         let on = self.youtube_playable();
         let availability = self.player_input(PlayerInput::YoutubeAvailable(on));
         if !on {
@@ -109,8 +142,11 @@ impl App {
         self.ui.youtube.client_id = config.youtube_client_id.unwrap_or_default();
         self.ui.youtube.client_secret.clear();
         let services = self.services.clone();
+        // Loaded up front, so the tab is already filled when it's opened.
+        let home = self.youtube_load_home();
         Task::batch([
             availability,
+            home,
             Task::perform(async move { services.yt_status().await }, |s| {
                 Message::Youtube(Msg::Status(s))
             }),
@@ -118,6 +154,12 @@ impl App {
     }
 
     pub(crate) fn youtube_ensure_loaded(&mut self) -> Task<Message> {
+        if self.ui.youtube.account.is_some() {
+            return match &self.ui.youtube.home {
+                Some(Ok(_)) => Task::none(),
+                _ => self.youtube_load_home(),
+            };
+        }
         if !self.youtube_enabled() || self.ui.youtube.library_loaded {
             return Task::none();
         }
@@ -146,12 +188,7 @@ impl App {
                 self.ui.youtube.signing_in = true;
                 let services = self.services.clone();
                 Task::perform(
-                    async move {
-                        services
-                            .yt_sign_in_window()
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
+                    async move { services.yt_sign_in().await.map_err(|e| e.to_string()) },
                     |r| Message::Youtube(Msg::GoogleSignedIn(r)),
                 )
             }
@@ -161,6 +198,18 @@ impl App {
                     Ok(Some(account)) => {
                         self.toast(format!("Signed in as {}", account.name));
                         self.ui.youtube.account = Some(account);
+                        self.ui.youtube.home = None;
+                        let home = self.youtube_load_home();
+                        // Straight to the library, which fills in as it arrives.
+                        let view = crate::widgets::rail::View::YouTube;
+                        if self.view_kind() == view {
+                            return Task::batch([
+                                home,
+                                self.on_platform_tab(view, super::platform::Tab::Home),
+                            ]);
+                        }
+                        self.ui.platform_tabs.remove(&view);
+                        return home;
                     }
                     Ok(None) => {}
                     Err(e) => self.toast(e),
@@ -170,6 +219,15 @@ impl App {
             Msg::GoogleSignOut => {
                 self.services.yt_sign_out();
                 self.ui.youtube.account = None;
+                self.ui.youtube.home = None;
+                Task::none()
+            }
+            Msg::Home(result) => {
+                self.ui.youtube.home_loading = false;
+                // Signed out while it was on its way: drop it.
+                if self.ui.youtube.account.is_some() {
+                    self.ui.youtube.home = Some(result.map(|h| *h));
+                }
                 Task::none()
             }
             Msg::ImportLibrary => {
@@ -208,7 +266,8 @@ impl App {
                 let was = self.ui.youtube.status.connected;
                 self.ui.youtube.status = status;
                 let _ = was;
-                if self.view_kind() == crate::widgets::rail::View::YouTube && self.youtube_enabled() {
+                if self.view_kind() == crate::widgets::rail::View::YouTube && self.youtube_enabled()
+                {
                     return self.youtube_ensure_loaded();
                 }
                 Task::none()
@@ -552,8 +611,116 @@ impl App {
         if self.ui.youtube.open.is_some() {
             self.youtube_open_tracks()
         } else {
-            self.ui.youtube.library.liked.clone()
+            self.youtube_liked()
         }
+    }
+
+    /// Liked songs: the signed-in account's, else the developer-client library's.
+    pub(crate) fn youtube_liked(&self) -> Vec<Track> {
+        match &self.ui.youtube.home {
+            Some(Ok(h)) => h.liked.clone(),
+            _ => self.ui.youtube.library.liked.clone(),
+        }
+    }
+
+    /// Recently played, from YouTube Music's history.
+    pub(crate) fn youtube_recent(&self) -> Vec<Track> {
+        match &self.ui.youtube.home {
+            Some(Ok(h)) => h.recent.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The songs of home shelf `i`.
+    pub(crate) fn youtube_shelf(&self, i: usize) -> Vec<Track> {
+        match &self.ui.youtube.home {
+            Some(Ok(h)) => h
+                .shelves
+                .get(i)
+                .map(|s| s.tracks.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The YouTube tab for a Google sign-in.
+    fn youtube_home_view<'a>(&'a self, p: Palette) -> Element<'a, Message> {
+        let s = &self.ui.youtube;
+        let h3 = |t: &str| {
+            container(text(t.to_string()).size(16).color(p.on_surface_variant)).padding(
+                iced::Padding {
+                    top: 32.0,
+                    bottom: 16.0,
+                    ..iced::Padding::ZERO
+                },
+            )
+        };
+        let name = s.account.as_ref().map(|a| a.name.clone());
+        let mut body = column![self.page_header("YouTube Music".into(), name, Vec::new(), p)];
+        match &s.home {
+            None => {
+                for title in ["Recently played", "Your playlists"] {
+                    body = body.push(h3(title)).push(
+                        row((0..6).map(|_| crate::widgets::skeleton::block(148, 148, 16.0, p)))
+                            .spacing(20),
+                    );
+                }
+            }
+            Some(Err(e)) => {
+                body = body.push(Space::new().height(16)).push(
+                    container(text(e.clone()).size(14))
+                        .padding([12, 16])
+                        .width(Length::Fill)
+                        .style(styles::error_box(p)),
+                );
+            }
+            Some(Ok(h)) => {
+                if !h.recent.is_empty() {
+                    body = body.push(h3("Recently played")).push(self.tile_shelf(
+                        &h.recent,
+                        ListRef::YoutubeRecent,
+                        p,
+                    ));
+                }
+                if !h.playlists.is_empty() {
+                    body = body
+                        .push(h3("Your playlists"))
+                        .push(self.catalog_cards(&h.playlists, p));
+                }
+                if !h.liked.is_empty() {
+                    body = body
+                        .push(h3("Liked songs"))
+                        .push(self.youtube_actions(p))
+                        .push(Space::new().height(16))
+                        .push(self.tile_shelf(&h.liked, ListRef::YoutubeLiked, p));
+                }
+                if !h.artists.is_empty() {
+                    body = body
+                        .push(h3("Artists you follow"))
+                        .push(self.catalog_cards(&h.artists, p));
+                }
+                for (i, shelf) in h.shelves.iter().enumerate() {
+                    body = body.push(h3(&shelf.title));
+                    if !shelf.tracks.is_empty() {
+                        body =
+                            body.push(self.tile_shelf(&shelf.tracks, ListRef::YoutubeShelf(i), p));
+                    }
+                    if !shelf.cards.is_empty() {
+                        body = body.push(self.catalog_cards(&shelf.cards, p));
+                    }
+                }
+                if h.recent.is_empty()
+                    && h.playlists.is_empty()
+                    && h.liked.is_empty()
+                    && h.shelves.is_empty()
+                {
+                    body = body.push(h3(
+                        "Nothing here yet. What you play and like on YouTube Music shows up here.",
+                    ));
+                }
+            }
+        }
+        page(body, p)
     }
 
     fn youtube_actions(&self, p: Palette) -> Element<'_, Message> {
@@ -639,8 +806,7 @@ impl App {
     /// The Google sign-in part of the YouTube Music account tab.
     pub(crate) fn youtube_account(&self, p: Palette) -> Element<'_, Message> {
         let s = &self.ui.youtube;
-        let (title, hint, actions): (String, String, Vec<Element<'_, Message>>) = match &s.account
-        {
+        let (title, hint, actions): (String, String, Vec<Element<'_, Message>>) = match &s.account {
             Some(a) => (
                 format!("Signed in as {}", a.name),
                 if a.email_or_handle.is_empty() {
@@ -653,20 +819,48 @@ impl App {
                 },
                 vec![
                     primary_button(
-                        if s.importing { "Importing…" } else { "Import library" },
+                        if s.importing {
+                            "Importing…"
+                        } else {
+                            "Import library"
+                        },
                         Icon::CloudDownload,
                         p,
                         Message::Youtube(Msg::ImportLibrary),
                     ),
-                    tonal_button("Sign out", Icon::Close, p, Message::Youtube(Msg::GoogleSignOut)),
+                    tonal_button(
+                        "Sign out",
+                        Icon::Close,
+                        p,
+                        Message::Youtube(Msg::GoogleSignOut),
+                    ),
                 ],
             ),
             None => (
                 "Sign in with Google".to_string(),
-                "Bring your YouTube Music likes and playlists into Mosaic. Playing needs no account."
-                    .to_string(),
+                match s.signin_browser {
+                    Some(name) if s.signing_in => format!(
+                        "Sign in with Google in the {name} window. Once YouTube Music shows up, \
+                         close that window and Mosaic finishes signing in."
+                    ),
+                    Some(name) => format!(
+                        "Opens {name} on a separate profile to sign in, then shows your YouTube \
+                         Music library here. Playing needs no account."
+                    ),
+                    None if cfg!(target_os = "linux") => "Signing in needs Firefox or a \
+                        Chromium-based browser (Chrome, Chromium, Brave, Edge, Zen…). Playing \
+                        needs no account."
+                        .to_string(),
+                    None => {
+                        "See your YouTube Music library here. Playing needs no account.".to_string()
+                    }
+                },
                 vec![primary_button(
-                    if s.signing_in { "Waiting for sign-in…" } else { "Sign in" },
+                    if s.signing_in {
+                        "Waiting for the browser…"
+                    } else {
+                        "Sign in"
+                    },
                     Icon::Person,
                     p,
                     Message::Youtube(Msg::GoogleSignIn),
@@ -675,9 +869,12 @@ impl App {
         };
         container(
             row![
-                column![text(title).size(16), text(hint).size(13).color(p.on_surface_variant)]
-                    .spacing(2)
-                    .width(Length::Fill),
+                column![
+                    text(title).size(16),
+                    text(hint).size(13).color(p.on_surface_variant)
+                ]
+                .spacing(2)
+                .width(Length::Fill),
                 row(actions).spacing(8),
             ]
             .spacing(24)
@@ -689,6 +886,9 @@ impl App {
 
     pub(crate) fn youtube_view(&self, p: Palette) -> Element<'_, Message> {
         let s = &self.ui.youtube;
+        if s.account.is_some() && s.open.is_none() {
+            return self.youtube_home_view(p);
+        }
         let h3 = |t: &str| {
             container(text(t.to_string()).size(16).color(p.on_surface_variant)).padding(
                 iced::Padding {
@@ -752,6 +952,7 @@ impl App {
         }
         if !lib.playlists.is_empty() {
             body = body.push(h3("Your playlists")).push(Self::shelf_row(
+                0,
                 lib.playlists.iter().map(|l| {
                     self.card(
                         &l.image,

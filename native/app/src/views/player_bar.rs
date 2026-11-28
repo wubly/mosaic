@@ -9,6 +9,7 @@ use super::artwork_of;
 use crate::app::{App, Message};
 use crate::player::PlayerInput;
 use crate::theme::{styles, Palette};
+use crate::widgets::appear;
 use crate::widgets::icon::{icon, outlined, Icon};
 use crate::widgets::spinner::spinner;
 use crate::widgets::wavy_slider::{flat_slider, wavy_slider};
@@ -30,7 +31,7 @@ fn tip<'a>(
 }
 
 fn icon_btn<'a>(
-    glyph: iced::widget::Text<'a>,
+    glyph: impl Into<Element<'a, Message>>,
     label: String,
     on: bool,
     p: Palette,
@@ -119,11 +120,19 @@ impl App {
         let thumb = (bar_h - 36.0).clamp(44.0, 120.0);
         let liked = self.store.is_liked(&track.id);
         let artist: Element<'_, Message> = if self.player.error.is_empty() {
-            text(track.artist.clone())
+            let name = text(track.artist.clone())
                 .size(14)
                 .style(styles::muted(p))
-                .wrapping(text::Wrapping::None)
-                .into()
+                .wrapping(text::Wrapping::None);
+            if track.artist_id.is_some() && self.has_pages(&track.source) {
+                // The name leads to the artist's page.
+                iced::widget::mouse_area(name)
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Message::GoPlayingArtist)
+                    .into()
+            } else {
+                name.into()
+            }
         } else {
             text(self.player.error.clone())
                 .size(14)
@@ -139,33 +148,45 @@ impl App {
             "Open Now Playing (F)".into(),
             p,
         );
+        // A new track slides its cover and title into place.
+        let track_key = appear::key_of(&track.id);
         let now = row![
-            thumb_btn,
-            container(column![
-                container(
-                    text(track.title.clone())
-                        .size(16)
-                        .wrapping(text::Wrapping::None)
-                )
-                .clip(true),
-                container(
-                    row![
-                        crate::views::track::provider_tag(&track, 12.0, p.on_surface_variant),
-                        text("·").size(12).color(p.on_surface_variant),
-                        artist,
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                )
-                .clip(true),
-            ])
-            .width(Length::Shrink),
+            appear::enter(thumb_btn, track_key, 0, 10, true),
+            appear::enter(
+                container(column![
+                    container(
+                        text(track.title.clone())
+                            .size(16)
+                            .wrapping(text::Wrapping::None)
+                    )
+                    .clip(true),
+                    container(
+                        row![
+                            crate::views::track::provider_tag(&track, 12.0, p.on_surface_variant),
+                            text("·").size(12).color(p.on_surface_variant),
+                            artist,
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                    )
+                    .clip(true),
+                ])
+                .width(Length::Shrink),
+                track_key,
+                1,
+                10,
+                false
+            ),
             icon_btn(
-                if liked {
-                    icon(Icon::Favorite, 22.0)
-                } else {
-                    outlined(Icon::Favorite, 22.0)
-                },
+                appear::pop(
+                    if liked {
+                        icon(Icon::Favorite, 22.0)
+                    } else {
+                        outlined(Icon::Favorite, 22.0)
+                    },
+                    appear::key_of(&track.id),
+                    u64::from(liked),
+                ),
                 if liked {
                     "Unlike (L)".into()
                 } else {
@@ -347,6 +368,7 @@ impl App {
 
         let radius = self.anim.value("play-radius", 18.0);
         let (pw, ph) = if compact { (52.0, 44.0) } else { (64.0, 56.0) };
+        let pop_key = u64::from(pl.playing) | (u64::from(pl.loading) << 1);
         let glyph: Element<'_, Message> = if pl.loading {
             spinner(
                 26.0,
@@ -361,6 +383,7 @@ impl App {
         } else {
             icon(Icon::PlayArrow, 32.0).color(p.on_primary).into()
         };
+        let glyph = appear::pop(glyph, 0, pop_key);
         let play = tip(
             button(container(glyph).center(Length::Fill))
                 .width(pw)

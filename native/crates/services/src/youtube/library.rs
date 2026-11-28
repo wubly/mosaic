@@ -24,7 +24,7 @@ const MAX_PAGES: usize = 500;
 /// Playlists fetched at the same time by [`Services::yt_import_everything`].
 const PLAYLIST_PARALLEL: usize = 3;
 
-const TRACK_SHELVES: &[&str] = &[
+pub(super) const TRACK_SHELVES: &[&str] = &[
     "musicPlaylistShelfRenderer",
     "musicPlaylistShelfContinuation",
     "musicShelfRenderer",
@@ -183,7 +183,7 @@ fn parse_playlist(item: &Value) -> Option<(String, String)> {
 
 /// Reads a list to its end. `fetch` gets each request body (the first names `browse_id`, the
 /// rest carry a continuation token) and returns the response.
-async fn crawl<T, F, Fut>(
+pub(super) async fn crawl<T, F, Fut>(
     mut fetch: F,
     browse_id: &str,
     containers: &[&str],
@@ -222,6 +222,7 @@ impl Services {
         mut body: Value,
         cookies: &str,
     ) -> Result<Value> {
+        let (visitor, account) = self.yt_session_ids();
         body["context"] = json!({
             "client": {
                 "clientName": "WEB_REMIX",
@@ -231,6 +232,12 @@ impl Services {
             },
             "user": {"lockedSafetyMode": false},
         });
+        if let Some(v) = &visitor {
+            body["context"]["client"]["visitorData"] = json!(v);
+        }
+        if let Some(a) = account {
+            body["context"]["user"]["onBehalfOfUser"] = json!(a);
+        }
         let mut req = self
             .http()
             .post(format!("{HOST}/{endpoint}?prettyPrint=false"))
@@ -243,6 +250,9 @@ impl Services {
             .timeout(Duration::from_secs(20));
         for (name, value) in Self::yt_auth_headers(cookies)? {
             req = req.header(name, value);
+        }
+        if let Some(v) = visitor {
+            req = req.header("X-Goog-Visitor-Id", v);
         }
         let res = req
             .send()

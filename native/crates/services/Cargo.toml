@@ -28,7 +28,7 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util", "process"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"], optional = true }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
 tracing = "0.1.44"
 unicode-normalization = "0.1.26"
 url = "2.5.9"
@@ -41,4 +41,4 @@ tokio = { version = "1.54.1", features = ["rt", "macros"] }
 
 [features]
 default = ["spotify"]
-spotify = ["dep:librespot-core", "dep:librespot-playback", "dep:librespot-metadata", "dep:librespot-oauth", "dep:tokio-tungstenite"]
+spotify = ["dep:librespot-core", "dep:librespot-playback", "dep:librespot-metadata", "dep:librespot-oauth"]

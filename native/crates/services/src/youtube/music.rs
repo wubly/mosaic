@@ -24,9 +24,11 @@ const VIDEOS_ONLY: &str = "EgWKAQIQAWoKEAkQBRAKEAMQBA==";
 const VIDEO_LENGTH_SLACK_MS: u64 = 20_000;
 /// Radio from a video: the `RDAMVM` playlist is YouTube Music's "start radio".
 const RADIO_PARAMS: &str = "wAEB";
+/// Pages of a radio read for autoplay (about 50 songs each).
+const RADIO_PAGES: usize = 3;
 const SEPARATOR: &str = " • ";
 
-fn text_of(node: &Value) -> String {
+pub(super) fn text_of(node: &Value) -> String {
     node["runs"]
         .as_array()
         .map(|runs| runs.iter().filter_map(|r| r["text"].as_str()).collect())
@@ -35,7 +37,7 @@ fn text_of(node: &Value) -> String {
 }
 
 /// The runs of a subtitle (`Artist • Album • 3:45`) joined into its `•`-separated parts.
-fn segments(runs: &Value) -> Vec<String> {
+pub(super) fn segments(runs: &Value) -> Vec<String> {
     let mut parts = vec![String::new()];
     for run in runs.as_array().into_iter().flatten() {
         let text = run["text"].as_str().unwrap_or_default();
@@ -49,7 +51,7 @@ fn segments(runs: &Value) -> Vec<String> {
     parts
 }
 
-fn clock_ms(text: &str) -> Option<u64> {
+pub(super) fn clock_ms(text: &str) -> Option<u64> {
     let mut total = 0u64;
     let mut parts = 0;
     for part in text.split(':') {
@@ -69,7 +71,7 @@ fn sized(url: &str, px: u32) -> String {
     }
 }
 
-fn art_of(thumbnails: &Value) -> (String, String) {
+pub(super) fn art_of(thumbnails: &Value) -> (String, String) {
     let url = thumbnails
         .as_array()
         .and_then(|t| t.last())
@@ -169,6 +171,42 @@ fn count_of(parts: &[String], column: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The first artist and album pages a row links to (its subtitle's names are links), so a
+/// track can lead to its artist's and album's pages.
+pub(super) fn link_ids(node: &Value) -> (Option<String>, Option<String>) {
+    fn walk(node: &Value, artist: &mut Option<String>, album: &mut Option<String>) {
+        match node {
+            Value::Object(map) => {
+                if let Some(browse) = map.get("browseEndpoint") {
+                    let id = browse["browseId"].as_str().map(str::to_string);
+                    match browse["browseEndpointContextSupportedConfigs"]
+                        ["browseEndpointContextMusicConfig"]["pageType"]
+                        .as_str()
+                    {
+                        Some("MUSIC_PAGE_TYPE_ARTIST") if artist.is_none() => *artist = id,
+                        Some("MUSIC_PAGE_TYPE_ALBUM") if album.is_none() => *album = id,
+                        _ => {}
+                    }
+                }
+                map.values().for_each(|v| walk(v, artist, album));
+            }
+            Value::Array(list) => list.iter().for_each(|v| walk(v, artist, album)),
+            _ => {}
+        }
+    }
+    let (mut artist, mut album) = (None, None);
+    walk(node, &mut artist, &mut album);
+    (artist, album)
+}
+
+/// `track` with the artist and album pages `node` links to.
+pub(super) fn linked(mut track: Track, node: &Value) -> Track {
+    let (artist, album) = link_ids(node);
+    track.artist_id = track.artist_id.or(artist);
+    track.album_id = track.album_id.or(album);
+    track
+}
+
 fn finish(id: &str, title: String, parts: &[String], ms: u64, thumbnails: &Value) -> Track {
     let (artist, album) = artist_and_album(parts);
     let (art, thumb) = art_of(thumbnails);
@@ -257,12 +295,15 @@ fn parse_rows(response: &Value) -> Vec<(Kind, Track, u64)> {
             );
             Some((
                 kind,
-                finish(
-                    id,
-                    title,
-                    &parts,
-                    ms,
-                    &item["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"],
+                linked(
+                    finish(
+                        id,
+                        title,
+                        &parts,
+                        ms,
+                        &item["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"],
+                    ),
+                    &item["flexColumns"],
                 ),
                 plays,
             ))
@@ -300,12 +341,15 @@ fn parse_card(response: &Value) -> Option<(Kind, Track, u64)> {
     let plays = count_of(&parts, "");
     Some((
         kind,
-        finish(
-            id,
-            title,
-            &parts,
-            ms,
-            &card["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"],
+        linked(
+            finish(
+                id,
+                title,
+                &parts,
+                ms,
+                &card["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"],
+            ),
+            &card["subtitle"],
         ),
         plays,
     ))
@@ -523,6 +567,16 @@ pub fn parse_suggestions(response: &Value) -> Vec<Suggestion> {
     out
 }
 
+/// The token for a radio's next page, if it has one.
+fn radio_continuation(response: &Value) -> Option<String> {
+    let mut found = Vec::new();
+    collect(response, "nextRadioContinuationData", &mut found);
+    found
+        .first()
+        .and_then(|c| c["continuation"].as_str())
+        .map(str::to_string)
+}
+
 /// The tracks of a `/next` response's queue (a radio), first the seed, then what follows.
 pub fn parse_queue(response: &Value) -> Vec<Track> {
     let mut items = Vec::new();
@@ -536,12 +590,15 @@ pub fn parse_queue(response: &Value) -> Vec<Track> {
             if !seen.insert(id.to_string()) {
                 return None;
             }
-            Some(finish(
-                id,
-                text_of(&item["title"]),
-                &segments(&item["longBylineText"]["runs"]),
-                ms,
-                &item["thumbnail"]["thumbnails"],
+            Some(linked(
+                finish(
+                    id,
+                    text_of(&item["title"]),
+                    &segments(&item["longBylineText"]["runs"]),
+                    ms,
+                    &item["thumbnail"]["thumbnails"],
+                ),
+                &item["longBylineText"],
             ))
         })
         .collect()
@@ -609,7 +666,7 @@ fn video_type(response: &Value) -> Option<&str> {
 }
 
 impl Services {
-    async fn music_post(&self, endpoint: &str, mut body: Value) -> Result<Value> {
+    pub(crate) async fn music_post(&self, endpoint: &str, mut body: Value) -> Result<Value> {
         body["context"] = json!({"client": {
             "clientName": "WEB_REMIX",
             "clientVersion": REMIX_VERSION,
@@ -689,12 +746,18 @@ impl Services {
         Ok(pick_video(track, &parse_search(&found)).and_then(|v| v.video_id.clone()))
     }
 
-    /// Tracks YouTube Music's radio plays after `video_id`, not including it.
+    /// Tracks YouTube Music's radio plays after `video_id`, not including it: the first page
+    /// (about 50) and the next ones up to `RADIO_PAGES`, each video once.
     pub async fn yt_related(&self, video_id: &str) -> Result<Vec<Track>> {
+        self.yt_radio(video_id, RADIO_PAGES).await
+    }
+
+    /// `yt_related` reading `pages` pages of the radio.
+    pub async fn yt_radio(&self, video_id: &str, pages: usize) -> Result<Vec<Track>> {
         if !valid_video_id(video_id) {
             bail!("YouTube: this isn't a valid video");
         }
-        let json = self
+        let mut json = self
             .music_post(
                 "next",
                 json!({
@@ -705,10 +768,33 @@ impl Services {
                 }),
             )
             .await?;
-        Ok(parse_queue(&json)
-            .into_iter()
-            .filter(|t| t.video_id.as_deref() != Some(video_id))
-            .collect())
+        let mut seen = std::collections::HashSet::from([video_id.to_string()]);
+        let mut out = Vec::new();
+        for page in 0..pages.max(1) {
+            out.extend(
+                parse_queue(&json)
+                    .into_iter()
+                    .filter(|t| t.video_id.as_ref().is_some_and(|v| seen.insert(v.clone()))),
+            );
+            let Some(token) = radio_continuation(&json) else {
+                break;
+            };
+            if page + 1 == pages {
+                break;
+            }
+            // A later page that fails just ends the radio where it got to.
+            match self
+                .music_post("next", json!({ "continuation": token }))
+                .await
+            {
+                Ok(next) => json = next,
+                Err(e) => {
+                    tracing::debug!("YouTube Music radio page {}: {e}", page + 2);
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

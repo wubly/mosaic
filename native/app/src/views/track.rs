@@ -30,7 +30,13 @@ pub enum ListRef {
     /// Soloist's own up-next list.
     SpotifyQueue,
     YoutubeLiked,
+    /// YouTube Music's recently played, for the signed-in account.
+    YoutubeRecent,
+    /// A YouTube Music home shelf, by position.
+    YoutubeShelf(usize),
     YoutubePlaylist,
+    /// The open artist, album or playlist page (`views::catalog`).
+    Catalog,
 }
 
 impl ListRef {
@@ -42,6 +48,7 @@ impl ListRef {
         !matches!(
             self,
             ListRef::Recent
+                | ListRef::YoutubeRecent
                 | ListRef::History
                 | ListRef::Results
                 | ListRef::SpotifyShelf(super::spotify::Shelf::Recent)
@@ -156,8 +163,11 @@ impl App {
             ListRef::More => self.ui.discover.more.1.clone(),
             ListRef::Recent => self.recent.clone(),
             ListRef::SpotifyQueue => self.ui.spotify.queue.1.clone(),
-            ListRef::YoutubeLiked => self.ui.youtube.library.liked.clone(),
+            ListRef::YoutubeLiked => self.youtube_liked(),
+            ListRef::YoutubeRecent => self.youtube_recent(),
+            ListRef::YoutubeShelf(i) => self.youtube_shelf(*i),
             ListRef::YoutubePlaylist => self.youtube_open_tracks(),
+            ListRef::Catalog => self.catalog_tracks(),
             ListRef::Queue => self.player.queue.list.clone(),
             ListRef::Likes => self.store.likes.clone(),
             ListRef::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
@@ -432,11 +442,15 @@ impl App {
         })
         .on_press(Message::Track(Msg::Click(r.clone())));
         let like = button(
-            container(if liked {
-                icon(Icon::Favorite, 20.0)
-            } else {
-                outlined(Icon::Favorite, 20.0)
-            })
+            container(crate::widgets::appear::pop(
+                if liked {
+                    icon(Icon::Favorite, 20.0)
+                } else {
+                    outlined(Icon::Favorite, 20.0)
+                },
+                crate::widgets::appear::key_of(&t.id),
+                u64::from(liked),
+            ))
             .center(Length::Fill),
         )
         .width(40)
@@ -592,7 +606,7 @@ impl App {
                     true,
                 ));
             height += 56.0 + 9.0 + 40.0 * 5.0 + 9.0;
-            if t.source == Source::Spotify && t.artist_id.is_some() {
+            if t.artist_id.is_some() && self.has_pages(&t.source) {
                 items = items.push(item(
                     icon(Icon::Person, 20.0),
                     "Go to artist".into(),
@@ -601,7 +615,7 @@ impl App {
                 ));
                 height += 40.0;
             }
-            if t.source == Source::Spotify && t.album_id.is_some() {
+            if t.album_id.is_some() && self.has_pages(&t.source) {
                 items = items.push(item(
                     icon(Icon::Album, 20.0),
                     "Go to album".into(),
@@ -814,12 +828,14 @@ impl App {
                 self.toast("Link copied");
                 iced::clipboard::write(t.permalink.unwrap_or_default())
             }
-            MenuAction::GoArtist => match t.artist_id {
-                Some(id) => self.spotify_go(super::spotify::Route::Artist(id)),
+            MenuAction::GoArtist => match t.artist_id.clone() {
+                Some(id) => {
+                    self.open_track_page(&t, mosaic_services::catalog::CardKind::Artist, id)
+                }
                 None => Task::none(),
             },
-            MenuAction::GoAlbum => match t.album_id {
-                Some(id) => self.spotify_go(super::spotify::Route::Album(id)),
+            MenuAction::GoAlbum => match t.album_id.clone() {
+                Some(id) => self.open_track_page(&t, mosaic_services::catalog::CardKind::Album, id),
                 None => Task::none(),
             },
             MenuAction::WatchVideo => {

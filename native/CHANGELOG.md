@@ -1,4 +1,4 @@
-# 0.7.0
+## 0.7.0
 
 - polished the ui navigation to be less of a clusterfuck
 - polished and added ui animations to make everything feel less static
@@ -14,7 +14,6 @@
 - added auto update (opt-in)
 - introduced google oauth sign on to bring your ytm library over to mosaic
 - pushed youtube music and spotify out of ""beta""
-- added a second option for spotify on linux that doesnt use a webview
 - revamped mini player to not be clunky as fuck
 - simplified the spotify/youtube connection texts to be straight foward
 - made the ui run at 120 fps without causing cpu usage to shoot through the roof
@@ -22,4 +21,18 @@
 - made the search layout consistent across platforms
 - queue is now loaded instantly instead of waiting for the current song to end
 - fixed scrolling getting stuck when scrolling across a carousel
-- reworked the autoplay algorithm because it sometimes queues unrelated songs
+- reworked the autoplay algorithm because it sometimes queues unrelated songs- added artist, album and playlist pages for youtube music, soundcloud and monochrome so search isnt just songs anymore
+- search results now put what youre actually looking for first (artist name gets you artists, a song title gets you songs, an album gets you albums)
+- moved search into each platforms page instead of its own tab
+- google sign in now opens in your own browser since google blocks sign ins inside apps, which also makes it work on linux
+- your ytm recently played, playlists, likes and artists show up right after signing in instead of loading forever
+- go to artist/album works on every platform now, and clicking the artist in the player bar takes you to them
+- every platform plays at the same volume now instead of some being way louder than others (toggle in settings)
+- autoplay queues way more songs (ytm and monochrome used to give up at like 23 and 13)
+- autoplay mixes it up now so the same song doesnt hand you the exact same queue every time
+- spotify songs played on their own get a proper queue now
+- the next song gets loaded ahead of time so transitions dont get stuck as much
+- added an experimental toggle that fills autoplay from ytm when the platform youre on doesnt have a song
+- the same song wont end up in the queue twice anymore, even from different platforms
+- fixed the queue staying empty when you played another song while autoplay was still loading
+- artwork takes less ram on non-hidpi screens

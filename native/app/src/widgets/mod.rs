@@ -1,4 +1,6 @@
+pub mod appear;
 mod icon_codes;
+pub mod skeleton;
 
 pub mod gain_slider;
 pub mod icon;

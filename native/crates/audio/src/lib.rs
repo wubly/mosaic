@@ -103,6 +103,8 @@ pub enum Command {
         gains_db: [f32; 5],
     },
     SetLeveling(bool),
+    /// Match every track's loudness (off until the app turns it on).
+    SetNormalize(bool),
     SetSpeed(f32),
     Shutdown,
 }

@@ -110,6 +110,15 @@ impl Services {
         Ok(bytes)
     }
 
+    /// Forgets the decoded images kept for re-requests, once the app has let go of artwork it no
+    /// longer shows. What is still on screen is shared with the app and stays; the rest reloads
+    /// from the disk cache if it comes back.
+    pub fn trim_image_memory(&self) {
+        if let Ok(mut lru) = self.inner.images.lru.lock() {
+            lru.clear();
+        }
+    }
+
     /// Loads a URL or absolute path, fits it inside `max_px`, and caches it on disk and in memory.
     pub async fn load_image(&self, src: &str, max_px: u32) -> Result<Arc<RgbaImage>> {
         let key: Key = (src.to_string(), max_px);

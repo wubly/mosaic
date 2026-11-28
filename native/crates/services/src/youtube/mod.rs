@@ -1,7 +1,9 @@
 pub mod api;
 pub mod auth;
+pub mod browser;
 pub mod catalog;
+pub mod home;
 pub mod innertube;
-pub mod music;
 pub mod library;
+pub mod music;
 pub mod signin;

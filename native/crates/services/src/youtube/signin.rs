@@ -17,6 +17,31 @@ const OVERALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 impl Services {
     /// Opens the YouTube Music sign-in window and waits for the user. `Ok(None)` when they close
     /// it without signing in.
+    /// Signs in with Google in the user's own browser (see `browser`), or, on Windows and macOS
+    /// without a usable browser, in Mosaic's own web view window. `Ok(None)` when the user
+    /// closes it without signing in.
+    pub async fn yt_sign_in(&self) -> Result<Option<Account>> {
+        let browsers = super::browser::find();
+        let Some(browser) = browsers.first() else {
+            if cfg!(any(windows, target_os = "macos")) {
+                return self.yt_sign_in_window().await;
+            }
+            bail!(
+                "Signing in needs Firefox or a Chromium-based browser (Chrome, Chromium, Brave, \
+                 Edge, Vivaldi, Zen, LibreWolf). Install one and try again."
+            );
+        };
+        tracing::info!("signing in to YouTube Music with {}", browser.name);
+        let data_dir = self.inner.dirs.images().with_file_name("youtube-signin");
+        match super::browser::sign_in(self.http(), browser, &data_dir).await? {
+            Some(c) => Ok(Some(
+                self.yt_session_login(&c.cookies, c.visitor_data, c.data_sync_id)
+                    .await?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub async fn yt_sign_in_window(&self) -> Result<Option<Account>> {
         let data_dir = self.inner.dirs.images().with_file_name("youtube-signin");
         std::fs::create_dir_all(&data_dir)?;

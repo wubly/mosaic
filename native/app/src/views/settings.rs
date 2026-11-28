@@ -45,6 +45,8 @@ pub enum Msg {
     FadePause(bool),
     SkipSilence(bool),
     Leveling(bool),
+    Normalize(bool),
+    MixedSources(bool),
     Lyrics(bool),
     CloseToTray(bool),
     Presence(bool),
@@ -118,8 +120,8 @@ impl App {
                     self.ui.update_file = None;
                 }
                 self.ui.update = *u;
-                let auto = self.services.config().auto_update == Some(true)
-                    && update::can_self_update();
+                let auto =
+                    self.services.config().auto_update == Some(true) && update::can_self_update();
                 if announce && auto {
                     return self.download_update(false);
                 }
@@ -173,6 +175,8 @@ impl App {
             Msg::FadePause(v) => self.set_setting(|s| s.fade_pause = v),
             Msg::SkipSilence(v) => self.set_setting(|s| s.skip_silence = v),
             Msg::Leveling(v) => self.set_setting(|s| s.leveling = v),
+            Msg::Normalize(v) => self.set_setting(|s| s.normalize = v),
+            Msg::MixedSources(v) => self.set_setting(|s| s.mixed_sources = v),
             Msg::Lyrics(v) => self.set_setting(|s| s.lyrics_open = v),
             Msg::CloseToTray(v) => {
                 self.services.update_config(|c| c.close_to_tray = Some(v));
@@ -355,7 +359,10 @@ impl App {
                 (
                     format!("Mosaic {} is ready", u.latest.clone().unwrap_or_default()),
                     if self.ui.update_file.is_some() {
-                        format!("You’re on {}. Downloaded and ready: Mosaic restarts to finish.", u.current)
+                        format!(
+                            "You’re on {}. Downloaded and ready: Mosaic restarts to finish.",
+                            u.current
+                        )
                     } else {
                         format!("You’re on {}.", u.current)
                     },
@@ -375,7 +382,10 @@ impl App {
                     },
                 )
             };
-            let action: Element<'_, Message> = if u.available && update::can_self_update() && u.asset.is_some() {
+            let action: Element<'_, Message> = if u.available
+                && update::can_self_update()
+                && u.asset.is_some()
+            {
                 primary_button(
                     if self.ui.update_busy {
                         "Downloading…"
@@ -462,10 +472,12 @@ impl App {
         };
         let playback = self.settings_card(
             vec![
-                self.switch_row("Autoplay similar tracks", "Keep the queue going with songs in the style of what’s playing. They show up in the queue right away, so you can change them first. Spotify tracks follow Spotify’s own queue.".into(), s.autoplay, Msg::Autoplay, p),
+                self.switch_row("Autoplay similar tracks", "Keep the queue going with songs in the style of what’s playing. They show up in the queue right away, so you can change them first. A Spotify song played from an album or playlist follows Spotify’s own queue.".into(), s.autoplay, Msg::Autoplay, p),
+                self.switch_row("Mix services in autoplay (experimental)", "When the service you’re listening on doesn’t have a song autoplay picked, play it from YouTube Music instead of skipping it. The same song never shows up twice in the queue.".into(), s.mixed_sources, Msg::MixedSources, p),
                 crossfade.into(),
                 self.switch_row("Fade on pause and resume", "Ease the volume instead of cutting it off.".into(), s.fade_pause, Msg::FadePause, p),
                 self.switch_row("Skip silence at start and end", "Jump past long silent intros and outros, like the blank first minute some SoundCloud uploads use to dodge copyright. Never touches the middle of a song.".into(), s.skip_silence, Msg::SkipSilence, p),
+                self.switch_row("Same volume everywhere", "Play every song at the same loudness, so SoundCloud, YouTube and Monochrome match each other and Spotify.".into(), s.normalize, Msg::Normalize, p),
                 self.switch_row("Level loudness", "Gently compress loud peaks so quiet and loud tracks sit closer together.".into(), s.leveling, Msg::Leveling, p),
                 self.switch_row("Show lyrics panel", "Synced lyrics from LRCLIB beside your music, matched to the song and artist.".into(), s.lyrics_open, Msg::Lyrics, p),
                 self.switch_row("Keep playing in the tray", tray_hint, config.close_to_tray() && self.tray_available, Msg::CloseToTray, p),
@@ -498,7 +510,6 @@ impl App {
                 p,
             )
         };
-
 
         let library = self.settings_card(
             vec![container(

@@ -21,6 +21,8 @@ pub struct MixerParams {
     pub rendered: AtomicU64,
     pub eq_gains: [AtomicU32; 5],
     pub leveling: AtomicBool,
+    /// Bring every track to the same loudness (see `dsp::loudness`).
+    pub normalize: AtomicBool,
 }
 
 impl MixerParams {
@@ -31,6 +33,7 @@ impl MixerParams {
             rendered: AtomicU64::new(0),
             eq_gains: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             leveling: AtomicBool::new(false),
+            normalize: AtomicBool::new(false),
         }
     }
 
@@ -104,8 +107,16 @@ impl Mixer {
     pub fn render(&mut self, out: &mut [f32]) {
         out.fill(0.0);
         let speed = self.params.speed();
+        let normalize = self.params.normalize.load(Ordering::Relaxed);
         for deck in &mut self.decks {
-            deck.mix(out, self.rate, speed, self.blocking, &mut self.events);
+            deck.mix(
+                out,
+                self.rate,
+                speed,
+                self.blocking,
+                normalize,
+                &mut self.events,
+            );
         }
 
         let gains = std::array::from_fn(|i| {

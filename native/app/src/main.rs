@@ -71,7 +71,13 @@ fn main() -> anyhow::Result<()> {
             .map(|f| mosaic_platform::single_instance::open_message(&f.to_string_lossy()))
             .collect()
     };
-    match mosaic_platform::single_instance::acquire(&messages) {
+    // Another data folder is another Mosaic (its own library and settings): it runs alongside.
+    let scope = args.data_dir.as_ref().map(|root| {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let key = BuildHasherDefault::<DefaultHasher>::default().hash_one(root);
+        format!("{key:016x}")
+    });
+    match mosaic_platform::single_instance::acquire(scope.as_deref(), &messages) {
         Ok(mosaic_platform::single_instance::Instance::Secondary) => return Ok(()),
         Ok(mosaic_platform::single_instance::Instance::Primary(listener)) => {
             mosaic_platform::single_instance::serve(listener, |m| {
@@ -222,6 +228,18 @@ fn tune_malloc() {
         libc::mallopt(libc::M_MMAP_THRESHOLD, 256 * 1024);
     }
 }
+
+/// Hands freed heap back to the OS (glibc keeps it otherwise); after artwork is let go.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn trim_heap() {
+    // SAFETY: malloc_trim only releases free memory; it is thread-safe.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn trim_heap() {}
 
 /// Chooses the windowing and graphics backends before wgpu starts.
 ///

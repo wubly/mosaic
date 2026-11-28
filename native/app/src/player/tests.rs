@@ -518,6 +518,49 @@ fn autoplay_and_radio_continue_from_a_monochrome_track() {
 }
 
 #[test]
+fn a_track_played_while_autoplay_is_fetching_gets_its_own_fetch() {
+    let mut h = Harness::new();
+    let fx = h.start_fx(&sc(1), &list(&[1]));
+    let (first, _) = related_fetch(&fx).expect("a fetch for song 1");
+    // Another song is clicked before song 1's answer arrives.
+    let fx = h.send(PlayerInput::Play(sc(5), None));
+    let (seed, _) = related_fetch(&fx).expect("song 5 doesn't wait for song 1's fetch");
+    assert_eq!(seed.id, sc(5).id);
+    // Song 1's late answer neither queues its tracks nor cancels song 5's fetch.
+    h.send(PlayerInput::Related {
+        purpose: RelatedPurpose::Autoplay,
+        seed: first,
+        result: Ok(list(&[10, 11])),
+    });
+    assert_eq!(h.c.queue.list.len(), 1);
+    h.send(PlayerInput::Related {
+        purpose: RelatedPurpose::Autoplay,
+        seed,
+        result: Ok(list(&[20, 21])),
+    });
+    assert_eq!(h.c.queue.list.len(), 3, "song 5's autoplay is queued");
+}
+
+#[test]
+fn autoplay_never_queues_a_song_already_there_from_another_service() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::YoutubeAvailable(true));
+    let fx = h.start_fx(&sc(1), &list(&[1]));
+    let (seed, _) = related_fetch(&fx).unwrap();
+    // The same song as the playing one, from YouTube: "song 1" by the same artist.
+    let mut same_song = track(101, "youtube", 100);
+    same_song.title = "Song 1 (Official Audio)".into();
+    let fx = h.send(PlayerInput::Related {
+        purpose: RelatedPurpose::Autoplay,
+        seed,
+        result: Ok(vec![same_song, sc(2)]),
+    });
+    assert!(resolves(&fx).is_empty());
+    let ids: Vec<_> = h.c.queue.list.iter().map(|t| t.id.key()).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+}
+
+#[test]
 fn autoplay_result_for_a_changed_track_is_dropped() {
     let mut h = Harness::new();
     h.start(&sc(2), &list(&[1, 2]));
@@ -1185,6 +1228,39 @@ fn spotifys_up_next_fills_an_empty_queue_and_skipping_forward_plays_it() {
     });
     assert!(resolves(&fx).is_empty(), "song 2 is already next");
     assert_eq!(resolves(&h.ended()), [2]);
+}
+
+#[test]
+fn a_spotify_song_with_nothing_lined_up_on_spotify_gets_autoplay_here() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    let fx = h.start_fx(&a, std::slice::from_ref(&a));
+    assert!(
+        related_fetch(&fx).is_none(),
+        "Spotify may still have a queue"
+    );
+    let fx = h.send(up_next("spotify:track:1", &[]));
+    let (seed, purpose) = related_fetch(&fx).expect("autoplay once Spotify has nothing");
+    assert_eq!((seed.id, purpose), (a.id.clone(), RelatedPurpose::Autoplay));
+    // Asked again (every poll): only one fetch.
+    assert!(related_fetch(&h.send(up_next("spotify:track:1", &[]))).is_none());
+    h.send(PlayerInput::Related {
+        purpose: RelatedPurpose::Autoplay,
+        seed: a,
+        result: Ok(vec![spotify(5), spotify(6)]),
+    });
+    assert_eq!(queue_ids(&h), ["song 1", "song 5", "song 6"]);
+    assert!(!h.c.spotify_led(), "Mosaic's autoplay leads now");
+}
+
+#[test]
+fn a_spotify_queue_from_spotify_needs_no_autoplay_here() {
+    let mut h = Harness::new();
+    h.send(PlayerInput::SpotifyAvailable(true));
+    let a = spotify(1);
+    h.start(&a, std::slice::from_ref(&a));
+    assert!(related_fetch(&h.send(up_next("spotify:track:1", &[2, 3]))).is_none());
 }
 
 #[test]

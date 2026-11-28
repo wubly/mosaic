@@ -102,7 +102,10 @@ impl App {
             };
             if here != section && here != Section::Queue {
                 let (title, sub) = match here {
-                    Section::Autoplay => ("Autoplay", "Picked to follow what's playing. Remove or reorder anything."),
+                    Section::Autoplay => (
+                        "Autoplay",
+                        "Picked to follow what's playing. Remove or reorder anything.",
+                    ),
                     _ => ("Up next on Spotify", "Spotify's own queue and autoplay"),
                 };
                 rows = rows.push(

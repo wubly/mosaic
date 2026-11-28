@@ -133,7 +133,7 @@ async fn soloist_plays_a_track_feeds_a_paced_clock_and_finishes_when_it_moves_on
         fail: Arc::new(|m| panic!("unexpected failure: {m}")),
         moved: Arc::new(move |uri| *m.lock().unwrap() = Some(uri)),
     };
-    playback.load("spotify:track:a", 0, target).unwrap();
+    playback.load("spotify:track:a", None, 0, target).unwrap();
     assert_eq!(next_command(&mut ws).await["command"], "activate");
     let play = next_command(&mut ws).await;
     assert_eq!(play["command"], "play");

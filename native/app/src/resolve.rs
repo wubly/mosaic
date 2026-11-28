@@ -93,7 +93,11 @@ async fn spotify(services: &Services, track: &Track, seek_to: f64) -> Result<Str
     playback
         .load(
             &uri,
-            track.album_id.as_ref().map(|id| format!("spotify:album:{id}")).as_deref(),
+            track
+                .album_id
+                .as_ref()
+                .map(|id| format!("spotify:album:{id}"))
+                .as_deref(),
             (seek_to.max(0.0) * 1000.0) as u32,
             target,
         )

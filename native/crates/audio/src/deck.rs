@@ -48,6 +48,9 @@ pub struct DeckShared {
     pub position: AtomicU64,
     pub eof_frame: AtomicU64,
     pub starved: AtomicBool,
+    /// The loudness-matching gain the decoder measured for the loaded track (f32 bits; 1.0
+    /// until it has measured enough).
+    pub norm_gain: AtomicU32,
 }
 
 impl DeckShared {
@@ -57,6 +60,7 @@ impl DeckShared {
             position: AtomicU64::new(0f64.to_bits()),
             eof_frame: AtomicU64::new(NO_EOF),
             starved: AtomicBool::new(false),
+            norm_gain: AtomicU32::new(1.0f32.to_bits()),
         }
     }
 
@@ -74,6 +78,8 @@ pub struct Rings {
     pub samples: Producer<f32>,
     pub markers: Producer<Marker>,
     pub pushed: u64,
+    /// Measures the loaded track's loudness as it is decoded (a new one per track).
+    pub loudness: Option<crate::dsp::loudness::LoudnessMeter>,
 }
 
 /// The audio-callback side of a deck.
@@ -86,6 +92,11 @@ pub struct DeckPlayer {
     playing: bool,
     gain: f32,
     fade: Option<FadeRun>,
+    /// The loudness-matching gain being applied, easing toward the decoder's measurement.
+    norm: f32,
+    /// Frames played since the track (or a seek) started: matching is quick at first, while
+    /// the measurement settles, and slow after so the level never pumps.
+    since_start: u64,
     popped: u64,
     base_frame: u64,
     base_pos: f64,
@@ -111,6 +122,8 @@ impl DeckPlayer {
             playing: false,
             gain: 1.0,
             fade: None,
+            norm: 1.0,
+            since_start: 0,
             popped: 0,
             base_frame: 0,
             base_pos: 0.0,
@@ -187,6 +200,7 @@ impl DeckPlayer {
             self.base_frame = m.frame;
             self.base_pos = m.pos;
             self.awaiting = false;
+            self.since_start = 0;
             return;
         }
     }
@@ -213,12 +227,14 @@ impl DeckPlayer {
     }
 
     /// Adds this deck's next `out.len() / 2` stereo frames into `out`.
+    #[allow(clippy::too_many_arguments)]
     pub fn mix(
         &mut self,
         out: &mut [f32],
         rate: u32,
         speed: f32,
         blocking: bool,
+        normalize: bool,
         events: &mut Producer<CbEvent>,
     ) {
         self.drain_msgs(events);
@@ -253,6 +269,18 @@ impl DeckPlayer {
         let n = want.min(avail);
         let mut consumed = 0;
         let mut gain = self.gain;
+        let norm_target = if normalize {
+            f32::from_bits(self.shared.norm_gain.load(Ordering::Relaxed))
+        } else {
+            1.0
+        };
+        let settle_secs = if self.since_start < u64::from(rate) * 5 {
+            0.4
+        } else {
+            4.0
+        };
+        let norm_coeff = 1.0 - (-1.0 / (settle_secs * rate as f32)).exp();
+        let mut norm = self.norm;
         let mut fade = self.fade.take();
         let mut finished: Option<AfterFade> = None;
         if n > 0 {
@@ -273,8 +301,9 @@ impl DeckPlayer {
                             fade = None;
                         }
                     }
-                    out[i * 2] += s[0] * gain;
-                    out[i * 2 + 1] += s[1] * gain;
+                    norm += (norm_target - norm) * norm_coeff;
+                    out[i * 2] += s[0] * gain * norm;
+                    out[i * 2 + 1] += s[1] * gain * norm;
                     consumed = i + 1;
                     if finished == Some(AfterFade::Pause) {
                         break;
@@ -285,6 +314,8 @@ impl DeckPlayer {
         }
         self.gain = gain;
         self.fade = fade;
+        self.norm = norm;
+        self.since_start += consumed as u64;
         if let Some(then) = finished {
             self.finish_fade(then, events);
         }
