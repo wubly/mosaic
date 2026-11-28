@@ -567,43 +567,90 @@ impl App {
         .into()
     }
 
-    /// Completions of the current query as chips under the search bar; a fixed-height row so
-    /// results don't jump as they come and go.
+    /// Completions of the current query as a list under the search bar. The slot is a fixed
+    /// height whenever there is a query and the previous list stays up until the next arrives,
+    /// so nothing below jumps while typing.
     pub(crate) fn suggestion_row(&self, p: Palette) -> Element<'_, Message> {
-        let d = &self.ui.discover;
-        let (for_query, list) = &d.suggestions;
-        let typed = d.query.trim().to_lowercase();
-        let shown: Vec<&String> = if *for_query == d.query {
-            list.iter()
-                .filter(|s| s.trim().to_lowercase() != typed)
-                .collect()
-        } else {
-            Vec::new()
+        self.suggestion_list(p, true)
+    }
+
+    /// `reserve` keeps the full height; without it the list is a floating card that only
+    /// takes the room it needs (for drawing over a page).
+    pub(crate) fn suggestion_list(&self, p: Palette, reserve: bool) -> Element<'_, Message> {
+        const ROWS: usize = 5;
+        const ROW_H: f32 = 40.0;
+        const BOLD: iced::Font = iced::Font {
+            weight: iced::font::Weight::Semibold,
+            ..iced::Font::with_name("Roboto Flex")
         };
-        let chips = iced::widget::Row::with_children(shown.into_iter().map(|s| {
+        let d = &self.ui.discover;
+        if d.query.trim().is_empty() {
+            return Space::new().height(0).into();
+        }
+        let typed = d.query.trim().to_lowercase();
+        let shown: Vec<&String> = d
+            .suggestions
+            .1
+            .iter()
+            .filter(|s| s.trim().to_lowercase() != typed)
+            .take(ROWS)
+            .collect();
+        if !reserve && shown.is_empty() {
+            return Space::new().height(0).into();
+        }
+        let items = shown.into_iter().map(|s| {
+            // What was typed stays quiet; the completion is what's worth reading.
+            let label: Element<'_, Message> = match s
+                .to_lowercase()
+                .starts_with(&typed)
+                .then(|| s.char_indices().nth(typed.chars().count()))
+            {
+                Some(split) => {
+                    let at = split.map_or(s.len(), |(i, _)| i);
+                    row![
+                        text(&s[..at]).size(14).color(p.on_surface_variant),
+                        text(&s[at..]).size(14).font(BOLD).color(p.on_surface),
+                    ]
+                    .into()
+                }
+                None => text(s.clone()).size(14).color(p.on_surface).into(),
+            };
             button(
-                row![
-                    icon(Icon::Search, 14.0).color(p.on_surface_variant),
-                    text(s.clone()).size(13)
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
+                // The button doesn't centre its content, so the row fills it and centres itself.
+                container(
+                    row![icon(Icon::Search, 16.0).color(p.on_surface_variant), label]
+                        .spacing(14)
+                        .align_y(Alignment::Center),
+                )
+                .height(Length::Fill)
+                .center_y(Length::Fill),
             )
-            .height(30)
-            .padding([0, 12])
-            .style(styles::chip(p, false))
+            .width(Length::Fill)
+            .height(ROW_H)
+            .padding([0, 14])
+            .style(styles::plain(p, 12.0))
             .on_press(Message::Discover(Msg::Suggest(s.clone())))
             .into()
-        }))
-        .spacing(6)
-        .wrap()
-        .vertical_spacing(6);
-        container(chips)
-            .padding(iced::Padding {
-                top: 10.0,
-                ..iced::Padding::ZERO
-            })
-            .into()
+        });
+        let list = iced::widget::Column::with_children(items)
+            .spacing(2)
+            .width(Length::Fill);
+        if reserve {
+            container(list)
+                .height(ROW_H * ROWS as f32 + 2.0 * (ROWS - 1) as f32 + 8.0)
+                .max_width(520)
+                .padding(iced::Padding {
+                    top: 8.0,
+                    ..iced::Padding::ZERO
+                })
+                .into()
+        } else {
+            container(list)
+                .max_width(520)
+                .padding(6)
+                .style(styles::popup(p, 18.0))
+                .into()
+        }
     }
 
     /// The search bar with the service picker beside it, or under it when the page is narrow.

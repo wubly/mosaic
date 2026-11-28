@@ -121,7 +121,7 @@ impl App {
         let strip = row![
             container(left).height(56).center_y(56),
             container(
-                column![self.search_bar(p), self.suggestion_row(p)]
+                column![self.search_bar(p)]
                     .width(Length::Fill)
                     .max_width(520)
                     .align_x(Alignment::End),
@@ -170,9 +170,21 @@ impl App {
             }
             _ => self.discover_page(Mode::Charts, p),
         };
-        column![self.tab_bar(view, p), body]
-            .height(Length::Fill)
-            .into()
+        // Suggestions float over the page under the bar rather than pushing it down.
+        let overlay = container(self.suggestion_list(p, false))
+            .padding(iced::Padding {
+                top: 20.0 + 56.0 + 6.0,
+                right: 40.0,
+                bottom: 0.0,
+                left: 40.0,
+            })
+            .width(Length::Fill)
+            .align_x(Alignment::End);
+        iced::widget::stack![
+            column![self.tab_bar(view, p), body].height(Length::Fill),
+            overlay
+        ]
+        .into()
     }
 
     fn account_page<'a>(
